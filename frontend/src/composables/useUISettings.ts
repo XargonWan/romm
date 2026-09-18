@@ -47,6 +47,10 @@ export const UI_SETTINGS_KEYS = {
     key: "settings.widgetLibraryStats",
     default: true,
   },
+  widgetActiveInstallers: {
+    key: "settings.widgetActiveInstallers",
+    default: true,
+  },
   libraryStatsMode: {
     key: "settings.libraryStatsMode",
     default: "compact",

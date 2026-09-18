@@ -1,6 +1,7 @@
 import type { AxiosResponse } from "axios";
 import type {
   ExclusionPayload,
+  InstallSettingsPayload,
   PlatformBindingPayload,
   ScanSettingsPayload,
 } from "@/__generated__";
@@ -75,6 +76,13 @@ async function updateScanSettings(payload: ScanSettingsPayload) {
   );
 }
 
+async function updateInstallSettings(payload: InstallSettingsPayload) {
+  return api.put<void, AxiosResponse<void>, InstallSettingsPayload>(
+    "/config/install",
+    payload,
+  );
+}
+
 export default {
   addPlatformBindConfig,
   deletePlatformBindConfig,
@@ -83,4 +91,5 @@ export default {
   addExclusion,
   deleteExclusion,
   updateScanSettings,
+  updateInstallSettings,
 };

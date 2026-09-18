@@ -802,6 +802,18 @@ export function isNintendoDSRom(rom: DetailedRom | SimpleRom): boolean {
   return hasValidExtension || hasValidFile;
 }
 
+// Kept in sync with WINDOWS_INSTALLABLE_SLUGS in
+// backend/handler/filesystem/installer_detection.py.
+const WINDOWS_INSTALLABLE_SLUGS = ["win", "win3x", "win9x", "windows-apps"];
+
+/**
+ * Check if a ROM's platform is a remote-install target (see the "Install"
+ * button). Non-Windows platforms stream-copy instead of running an installer.
+ */
+export function isWindowsInstallableRom(rom: DetailedRom | SimpleRom): boolean {
+  return WINDOWS_INSTALLABLE_SLUGS.includes(rom.platform_slug);
+}
+
 export function calculateMainLayoutWidth() {
   const { smAndDown } = useDisplay();
   const navigationStore = storeNavigation();
