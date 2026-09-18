@@ -881,6 +881,10 @@ Migrations support batch mode for SQLite and DB-specific SQL for MariaDB/MySQL/P
 | GET    | `/{id}/files`                | ROMS_READ | Get ROM file metadata                   |
 | GET    | `/{id}/files/content/{name}` | ROMS_READ | Download file (nginx X-Accel or direct) |
 
+#### Server-Side Install & Stream-Install
+
+Windows games can be installed server-side (Proton/Wine sandbox + VNC) under `/{id}/install/*`, with a resumable, Range-based streaming path (`/{id}/install/stream/*`) that lets a client start pulling a file before the install finishes. See **[docs/INSTALL_STREAMING_API.md](INSTALL_STREAMING_API.md)** for the full endpoint reference and client integration details.
+
 ### 6.6 Music (`/api/music`)
 
 Music-first read API over soundtrack `track_meta`, for external music-player clients. All routes are visibility-filtered (hidden platforms/ROMs excluded).
