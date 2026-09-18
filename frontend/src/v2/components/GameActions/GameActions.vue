@@ -12,15 +12,23 @@
 // completion triggers an RSlider popup. On phones these move into the
 // status button's sheet (GameActionBtn `withMetrics`) to save a row.
 // Writes are optimistic via useGameActions.setScore.
-import { computed, ref, toRef } from "vue";
+import { computed, onMounted, ref, toRef } from "vue";
 import { useI18n } from "vue-i18n";
+import { useRouter } from "vue-router";
 import type { SimpleRom } from "@/stores/roms";
+import { isWindowsInstallableRom } from "@/utils";
 import GameActionBtn from "@/v2/components/GameActions/GameActionBtn.vue";
 import MetricMenuBtn from "@/v2/components/GameActions/MetricMenuBtn.vue";
 import { METRICS } from "@/v2/components/GameActions/metrics";
+import DownloadOrInstallDialog from "@/v2/components/GameDetails/DownloadOrInstallDialog.vue";
+import InstallButton from "@/v2/components/GameDetails/InstallButton.vue";
 import { useBreakpoint } from "@/v2/composables/useBreakpoint";
 import { useGameActions } from "@/v2/composables/useGameActions";
 import { useGridNav } from "@/v2/composables/useGridNav";
+import {
+  startInstallAndNavigate,
+  useInstallSession,
+} from "@/v2/composables/useInstallSession";
 
 defineOptions({ inheritAttrs: false });
 
@@ -29,8 +37,48 @@ const props = defineProps<{
 }>();
 
 const { t } = useI18n();
+const router = useRouter();
 const romRef = toRef(props, "rom");
 const actions = useGameActions(() => romRef.value);
+
+// Windows ROMs fork the Download button into a Download/Install choice (see
+// DownloadOrInstallDialog) instead of getting a separate ribbon button.
+// InstallButton only replaces Download while a session is actively running
+// (progress + Abort) - Download must never disappear outright, so a
+// finished/failed session still goes through the same picker dialog, just
+// with its second choice reading "Reinstall". Non-Windows ROMs never touch
+// any of this - Download behaves exactly as it always has.
+const isWindowsRom = computed(() => isWindowsInstallableRom(props.rom));
+const install = useInstallSession(() => romRef.value);
+onMounted(() => {
+  if (!isWindowsRom.value) return;
+  install.checkExisting();
+});
+
+const showInstallButton = computed(
+  () => isWindowsRom.value && install.isActive.value,
+);
+
+const showDownloadOrInstall = ref(false);
+// The picker always opens for a Windows ROM, regardless of workerAvailable -
+// that check is a single, possibly-stale Redis lookup taken once per mount
+// (see checkWorkerAvailable's own comment), and gating the click on it used
+// to mean a false/stale read silently fell through to GameActionBtn's plain
+// download fallback instead of ever offering Install, with no explanation.
+// A genuinely unreachable worker now fails loudly instead - the backend is
+// the actual source of truth, and startInstallAndNavigate already surfaces
+// that failure in an error snackbar.
+function onDownloadClick() {
+  showDownloadOrInstall.value = true;
+}
+function chooseDownload() {
+  showDownloadOrInstall.value = false;
+  actions.download();
+}
+function chooseInstall() {
+  showDownloadOrInstall.value = false;
+  startInstallAndNavigate(romRef.value, router);
+}
 
 // Shrink the ribbon on phones — the large (44px) buttons crowd the narrow
 // column; the default (36px) size fits more per row and reads cleaner.
@@ -67,10 +115,18 @@ useGridNav(rootEl, {
     />
     <div v-if="actions.canPlay.value" class="game-actions__break" />
     <GameActionBtn
+      v-if="!showInstallButton"
       :rom="rom"
       action="download"
       :size="btnSize"
       variant="surface"
+      :on-download-click="isWindowsRom ? onDownloadClick : undefined"
+    />
+    <InstallButton
+      v-if="showInstallButton"
+      :install="install"
+      :rom="rom"
+      :size="btnSize"
     />
     <GameActionBtn
       :rom="rom"
@@ -131,6 +187,14 @@ useGridNav(rootEl, {
         @update:value="(v) => actions.setScore(m.field, v)"
       />
     </template>
+
+    <DownloadOrInstallDialog
+      v-if="isWindowsRom"
+      v-model="showDownloadOrInstall"
+      :is-reinstall="install.hasCache.value"
+      @download="chooseDownload"
+      @install="chooseInstall"
+    />
   </div>
 </template>
 

@@ -6,7 +6,7 @@
 //
 // Actions:
 //   play        → router.push /rom/:id/ejs
-//   download    → direct download link click
+//   download    → direct download link click (or `onDownloadClick` when set)
 //   copy-link   → copy the API download URL to clipboard; falls back to
 //                 a dialog that shows the link when clipboard is denied
 //   qr          → emit showQRCodeDialog (only meaningful for NDS today)
@@ -103,6 +103,13 @@ interface Props {
    * so they don't need their own ribbon row. No-op on desktop.
    */
   withMetrics?: boolean;
+  /**
+   * Download-only: overrides the default direct-download click. GameDetails
+   * uses this on Windows ROMs to open a Download/Install choice instead of
+   * downloading straight away, without forking a separate button for every
+   * other surface (GameCard, list rows) that just wants a plain download.
+   */
+  onDownloadClick?: () => void;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -111,6 +118,7 @@ const props = withDefaults(defineProps<Props>(), {
   withLabel: false,
   orientation: "horizontal",
   withMetrics: false,
+  onDownloadClick: undefined,
 });
 
 const { smAndDown } = useBreakpoint();
@@ -171,7 +179,7 @@ const preset = computed<Preset>(() => {
       icon: "mdi-download-outline",
       label: t("rom.download"),
       activeIcon: null,
-      onClick: actions.download,
+      onClick: props.onDownloadClick ?? actions.download,
       active: false,
     };
   }
