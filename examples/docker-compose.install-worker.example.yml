@@ -1,0 +1,96 @@
+# Optional overlay: enables server-side remote install ("Install" button on
+# Windows ROMs, streamed straight to the player's machine). There's no on/off
+# flag to set - romm only offers the button once it sees a worker registered
+# on the install queue, checked live. Not applying this overlay at all is
+# what keeps the feature off. Apply on top of docker-compose.example.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.install-worker.example.yml up -d
+#
+# Adds a dedicated Debian-based worker (docker/Dockerfile.install-sandbox)
+# that runs installers under bubblewrap plus a headless X/VNC bridge; the main
+# "romm" image is Alpine/musl, where Wine/Proton and the X/VNC stack are
+# unreliable, so this always runs as a separate container.
+#
+# The worker needs its own Redis connection reachable over the compose
+# network, not the "romm" service's embedded valkey (that one only binds
+# loopback inside its own container) - hence the extra romm-redis service and
+# pointing both "romm" and the worker at it via REDIS_HOST.
+#
+# "View install" (the VNC bridge to watch/help an installer) is proxied by
+# the "romm" service's own backend, authenticated against the viewer's RomM
+# session - the worker itself publishes no ports.
+
+volumes:
+  romm_install_cache:
+
+services:
+  romm:
+    environment:
+      - REDIS_HOST=romm-redis
+      # RomM's own public URL, used to build the proxied VNC link
+      # (${INSTALL_VNC_PUBLIC_BASE_URL}/api/roms/install/vnc/<port>/...).
+      # Match whatever you put in front of the "romm" service (e.g. your
+      # reverse proxy's public origin).
+      - INSTALL_VNC_PUBLIC_BASE_URL=http://localhost
+      # Compose service name of the worker below - must match its own name
+      # (or container_name) if you rename it.
+      - INSTALL_WORKER_HOST=romm-install-worker
+    volumes:
+      # Same path both containers write/read installs from; without this
+      # mount, "Clear Install Cache" clicked in the UI (handled by this
+      # container) can't see the files the worker created.
+      - romm_install_cache:/romm/cache/installs
+    depends_on:
+      - romm-redis
+
+  romm-redis:
+    image: valkey/valkey:8
+    container_name: romm-redis
+    restart: unless-stopped
+
+  romm-install-worker:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile.install-sandbox
+    container_name: romm-install-worker
+    restart: unless-stopped
+    # Cancelling an install stops its RQ job with an uncatchable SIGKILL to
+    # the whole process group (Xvfb/x11vnc/websockify/bwrap included), so
+    # they die as zombies rather than exiting cleanly. Without a real PID 1
+    # to reap them, they'd pile up forever; Docker's built-in init does that.
+    init: true
+    # bubblewrap needs to create a nested user+mount namespace to sandbox the
+    # installer. Try the lighter combination below first (works on most
+    # rootful Docker hosts with unprivileged user namespaces enabled in the
+    # kernel); if bwrap fails with "No permissions to create new namespace"
+    # or "Can't mount proc", your Docker setup needs full `privileged: true`
+    # instead (seen on nested/rootless Docker-in-Docker hosts).
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    # privileged: true
+    environment:
+      - REDIS_HOST=romm-redis
+      - DB_HOST=romm-db
+      - DB_NAME=romm # Must match the "romm" service's DB_NAME
+      - DB_USER=romm-user # Must match the "romm" service's DB_USER
+      - DB_PASSWD= # Must match the "romm" service's DB_PASSWD
+      - INSTALL_VNC_PORT_MIN=6900
+      - INSTALL_VNC_PORT_MAX=6999
+      # GE-Proton and Proton-CachyOS are both already bundled in the image at
+      # these paths (see docker/Dockerfile.install-sandbox) - GE-Proton used
+      # by default, CachyOS selectable via the "Proton version" picker.
+      # Override only to point at a different build, e.g. one mounted from
+      # the host.
+      # - INSTALL_PROTON_PATH=/opt/proton-ge/proton
+      # - INSTALL_PROTON_CACHYOS_PATH=/opt/proton-cachyos/proton
+    volumes:
+      - /path/to/library:/romm/library:ro # Same library path as the "romm" service, read-only
+      - romm_install_cache:/romm/cache/installs
+    # No ports published: only the "romm" service's own backend reaches this
+    # worker's VNC bridge, through its proxied /roms/install/vnc/... route.
+    depends_on:
+      - romm-redis
+      - romm-db

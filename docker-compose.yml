@@ -56,6 +56,49 @@ services:
     ports:
       - "${REDIS_PORT:-6379}:6379"
 
+  # Remote-install sandbox worker (Windows installer support): runs installers
+  # under bubblewrap plus a headless X/VNC bridge, consuming only the
+  # dedicated "install" RQ queue (see QueuePrio in handler/redis_handler.py) -
+  # romm-dev's own worker never picks up an install job, it doesn't carry
+  # Wine/Xvfb/bubblewrap. Part of the main stack; comment this service out if
+  # you don't want it. There's no separate on/off flag beyond that: romm-dev
+  # only offers the "Install" button once it can see a worker registered on
+  # the install queue (see handler.install.queue_status.has_install_worker),
+  # checked live rather than gated on a static env var.
+  romm-install-sandbox:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.install-sandbox
+    container_name: romm-install-sandbox
+    restart: unless-stopped
+    # Cancelling an install stops its RQ job with an uncatchable SIGKILL to
+    # the whole process group (Xvfb/x11vnc/websockify/bwrap included), so
+    # they die as zombies rather than exiting cleanly. Without a real PID 1
+    # to reap them, they'd pile up forever; Docker's built-in init does that.
+    init: true
+    env_file: .env
+    # bubblewrap needs to create a nested user+mount namespace to sandbox the
+    # installer. On rootful Docker with unprivileged user namespaces enabled
+    # on the host kernel, `cap_add: [SYS_ADMIN]` alone is often enough; on a
+    # nested/rootless Docker setup (verified on this dev machine) it isn't -
+    # only full `privileged` let bwrap mount its sandboxed /proc. If your
+    # host allows the lighter option, trade this for cap_add/security_opt.
+    privileged: true
+    environment:
+      - REDIS_HOST=romm-valkey-dev
+      - DB_HOST=${DB_HOST:-romm-db-dev}
+      - DB_NAME=${DB_NAME:-romm}
+      - DB_USER=${DB_USER:-romm}
+      - DB_PASSWD=${DB_PASSWD:-romm}
+      - ROMM_BASE_PATH=/app/romm
+    volumes:
+      # Same mock library/cache the romm-dev service sees, so files an
+      # install writes are visible on both sides without a second volume.
+      - ./romm_mock:/app/romm
+    depends_on:
+      - romm-db-dev
+      - romm-valkey-dev
+
   romm-postgres-dev:
     image: postgres:16-alpine
     container_name: romm-postgresql-dev

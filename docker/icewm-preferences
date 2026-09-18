@@ -1,0 +1,12 @@
+# Minimal IceWM preference overrides for the install sandbox's headless
+# session (see docker/Dockerfile.install-sandbox and handler/install/vnc.py).
+#
+# FocusOnMapTransient: IceWM's default (0) never auto-focuses a dialog/
+# transient window on map unless some *other* window already had focus (see
+# FocusOnMapTransientActive) - on a brand-new Xvfb session nothing ever has,
+# so an installer's first dialog (Inno Setup/InstallShield wizards are
+# typically WM_TRANSIENT_FOR windows) never receives real X11 input focus.
+# Without focus, xdotool's synthetic key events (both the auto-advance
+# clicker and anything a real user types through the VNC session) go
+# nowhere. Forcing this on fixes that unconditionally.
+FocusOnMapTransient=1
