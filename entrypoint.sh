@@ -48,24 +48,35 @@ else
 fi
 
 echo "Starting RQ scheduler..."
+# rqscheduler parses RQ_REDIS_SSL with `int(...)`, so it needs "0"/"1", not a
+# literal "false" (the documented default in env.template) - which crashes it
+# outright with "invalid literal for int() with base 10: 'false'".
+rq_redis_ssl=0
+[[ ${REDIS_SSL:-false} == "true" ]] && rq_redis_ssl=1
 RQ_REDIS_HOST=${REDIS_HOST:-127.0.0.1} \
 	RQ_REDIS_PORT=${REDIS_PORT:-6379} \
 	RQ_REDIS_USERNAME=${REDIS_USERNAME:-""} \
 	RQ_REDIS_PASSWORD=${REDIS_PASSWORD:-""} \
 	RQ_REDIS_DB=${REDIS_DB:-0} \
-	RQ_REDIS_SSL=${REDIS_SSL:-0} \
+	RQ_REDIS_SSL=${rq_redis_ssl} \
 	rqscheduler \
 	--path /app/backend \
 	--pid /tmp/rq_scheduler.pid &
 
 echo "Starting RQ worker..."
 # Build Redis URL properly
+# `${REDIS_SSL:+s}` only checks *emptiness*, not the value, so a literal
+# "false" (the documented default in env.template) would wrongly select
+# rediss:// and make the worker hang forever on a TLS handshake against a
+# plaintext port. Normalize to an actual boolean check first.
+redis_scheme="redis"
+[[ ${REDIS_SSL:-false} == "true" ]] && redis_scheme="rediss"
 if [[ -n ${REDIS_PASSWORD-} ]]; then
-	REDIS_URL="redis${REDIS_SSL:+s}://${REDIS_USERNAME-}:${REDIS_PASSWORD}@${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6379}/${REDIS_DB:-0}"
+	REDIS_URL="${redis_scheme}://${REDIS_USERNAME-}:${REDIS_PASSWORD}@${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6379}/${REDIS_DB:-0}"
 elif [[ -n ${REDIS_USERNAME-} ]]; then
-	REDIS_URL="redis${REDIS_SSL:+s}://${REDIS_USERNAME}@${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6379}/${REDIS_DB:-0}"
+	REDIS_URL="${redis_scheme}://${REDIS_USERNAME}@${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6379}/${REDIS_DB:-0}"
 else
-	REDIS_URL="redis${REDIS_SSL:+s}://${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6379}/${REDIS_DB:-0}"
+	REDIS_URL="${redis_scheme}://${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6379}/${REDIS_DB:-0}"
 fi
 
 # Set PYTHONPATH so RQ can find the tasks module.

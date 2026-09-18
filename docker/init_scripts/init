@@ -225,12 +225,17 @@ start_bin_valkey-server() {
 start_bin_rq_scheduler() {
 	info_log "Starting RQ scheduler"
 
+	# rqscheduler parses RQ_REDIS_SSL with `int(...)`, so it needs "0"/"1", not
+	# a literal "false" (the documented default in env.template) - which
+	# crashes it outright with "invalid literal for int() with base 10: 'false'".
+	local rq_redis_ssl=0
+	[[ ${REDIS_SSL:-false} == "true" ]] && rq_redis_ssl=1
 	RQ_REDIS_HOST=${REDIS_HOST:-127.0.0.1} \
 		RQ_REDIS_PORT=${REDIS_PORT:-6379} \
 		RQ_REDIS_USERNAME=${REDIS_USERNAME:-""} \
 		RQ_REDIS_PASSWORD=${REDIS_PASSWORD:-""} \
 		RQ_REDIS_DB=${REDIS_DB:-0} \
-		RQ_REDIS_SSL=${REDIS_SSL:-0} \
+		RQ_REDIS_SSL=${rq_redis_ssl} \
 		rqscheduler \
 		--path /backend \
 		--pid /tmp/rq_scheduler.pid &
@@ -240,14 +245,20 @@ start_bin_rq_scheduler() {
 start_bin_rq_worker() {
 	info_log "Starting RQ worker"
 
-	# Build Redis URL properly
+	# Build Redis URL properly.
+	# `${REDIS_SSL:+s}` only checks *emptiness*, not the value, so a literal
+	# "false" (the documented default in env.template) would wrongly select
+	# rediss:// and make the worker hang forever on a TLS handshake against a
+	# plaintext port. Normalize to an actual boolean check first.
+	local redis_scheme="redis"
+	[[ ${REDIS_SSL:-false} == "true" ]] && redis_scheme="rediss"
 	local redis_url
 	if [[ -n ${REDIS_PASSWORD-} ]]; then
-		redis_url="redis${REDIS_SSL:+s}://${REDIS_USERNAME-}:${REDIS_PASSWORD}@${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6379}/${REDIS_DB:-0}"
+		redis_url="${redis_scheme}://${REDIS_USERNAME-}:${REDIS_PASSWORD}@${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6379}/${REDIS_DB:-0}"
 	elif [[ -n ${REDIS_USERNAME-} ]]; then
-		redis_url="redis${REDIS_SSL:+s}://${REDIS_USERNAME}@${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6379}/${REDIS_DB:-0}"
+		redis_url="${redis_scheme}://${REDIS_USERNAME}@${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6379}/${REDIS_DB:-0}"
 	else
-		redis_url="redis${REDIS_SSL:+s}://${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6379}/${REDIS_DB:-0}"
+		redis_url="${redis_scheme}://${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6379}/${REDIS_DB:-0}"
 	fi
 
 	# Set PYTHONPATH so RQ can find the tasks module.

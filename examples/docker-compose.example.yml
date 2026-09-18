@@ -1,3 +1,7 @@
+# Want server-side remote install (the "Install" button on Windows ROMs)?
+# See docker-compose.install-worker.example.yml, an overlay applied on top of
+# this file.
+
 volumes:
   mysql_data:
   romm_resources:

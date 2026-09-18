@@ -40,6 +40,12 @@ export ROMM_BASE_PATH=${ROMM_BASE_PATH:-/romm}
 export ROMM_PORT=${ROMM_PORT:-8080}
 # Keep the nginx upstream port in sync with the port gunicorn binds to.
 export DEV_PORT=${DEV_PORT:-5000}
+# Compose service name of the remote-install sandbox worker the backend
+# proxies VNC traffic to (see docker-compose.yml's romm-install-sandbox
+# service and endpoints/roms/install.py's install_vnc_http/install_vnc_ws);
+# only resolved when a "View install" request actually comes in. config.py
+# has the same default, this export just keeps it consistent everywhere.
+export INSTALL_WORKER_HOST=${INSTALL_WORKER_HOST:-romm-install-sandbox}
 
 # Disable nginx access logs when log level is WARNING, ERROR, or CRITICAL
 loglevel="${LOGLEVEL:-INFO}"
