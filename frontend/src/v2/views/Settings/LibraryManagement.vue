@@ -11,13 +11,14 @@ import storeConfig from "@/stores/config";
 import ExcludedSection from "@/v2/components/Settings/ExcludedSection.vue";
 import FolderMappingsSection from "@/v2/components/Settings/FolderMappingsSection.vue";
 import MissingGamesSection from "@/v2/components/Settings/MissingGamesSection.vue";
+import StreamInstallSection from "@/v2/components/Settings/StreamInstallSection.vue";
 
 const { t } = useI18n();
 const route = useRoute();
 const router = useRouter();
 
-type Tab = "mapping" | "excluded" | "missing";
-const validTabs: Tab[] = ["mapping", "excluded", "missing"];
+type Tab = "mapping" | "excluded" | "missing" | "stream-install";
+const validTabs: Tab[] = ["mapping", "excluded", "missing", "stream-install"];
 
 const tab = ref<Tab>(
   (validTabs as string[]).includes(route.query.tab as string)
@@ -63,6 +64,11 @@ const tabs = computed<RTabNavItem[]>(() => [
     id: "missing",
     label: t("settings.missing-games-tab"),
     icon: "mdi-folder-question-outline",
+  },
+  {
+    id: "stream-install",
+    label: t("settings.stream-install-tab"),
+    icon: "mdi-speedometer",
   },
 ]);
 
@@ -111,6 +117,7 @@ const tabModel = computed<string>({
     <FolderMappingsSection v-if="tab === 'mapping'" />
     <ExcludedSection v-else-if="tab === 'excluded'" />
     <MissingGamesSection v-else-if="tab === 'missing'" />
+    <StreamInstallSection v-else-if="tab === 'stream-install'" />
   </div>
 </template>
 

@@ -50,6 +50,7 @@ const {
   showHomeWidgets,
   widgetRandomPick,
   widgetLibraryStats,
+  widgetActiveInstallers,
   libraryStatsMode,
   widgetOrder,
   // Gallery
@@ -322,6 +323,12 @@ function onVirtualCollectionTypeChange(value: unknown) {
               />
             </template>
           </SettingsToggleRow>
+          <SettingsToggleRow
+            v-model="widgetActiveInstallers"
+            :title="t('settings.widget-active-installers')"
+            :description="t('settings.widget-active-installers-desc')"
+            :disabled="!showHomeWidgets"
+          />
         </div>
         <!-- Reorder list — drag handles let users decide the
              left-to-right order the widgets paint on Home. Disabled
