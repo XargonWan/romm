@@ -471,3 +471,93 @@ class TestRarArchives:
             "--",
             "game.gba",
         ]
+
+
+class TestExtractArchiveTree:
+    """Extraction of an archive's full contents (not just the largest
+    member) into a directory tree, used to search inside an installer
+    candidate that's itself an archive/disc image."""
+
+    def test_extracts_every_member_preserving_structure(self, tmp_path):
+        from tests._zipfile_shim import reload_zipfile
+
+        reload_zipfile()
+        import zipfile
+
+        archive_path = tmp_path / "installer.zip"
+        with zipfile.ZipFile(archive_path, "w") as zf:
+            zf.writestr("Setup/setup.exe", b"fake installer bytes")
+            zf.writestr("Setup/data.bin", b"payload")
+            zf.writestr("readme.txt", b"hello")
+
+        dest = tmp_path / "extracted"
+        dest.mkdir()
+        assert archives.extract_archive_tree(archive_path, dest) is True
+
+        found = sorted(
+            p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file()
+        )
+        assert found == ["Setup/data.bin", "Setup/setup.exe", "readme.txt"]
+        assert (dest / "Setup" / "setup.exe").read_bytes() == b"fake installer bytes"
+
+    def test_member_path_escaping_dest_dir_is_skipped(self, tmp_path):
+        from tests._zipfile_shim import reload_zipfile
+
+        reload_zipfile()
+        import zipfile
+
+        archive_path = tmp_path / "evil.zip"
+        with zipfile.ZipFile(archive_path, "w") as zf:
+            zf.writestr("../../etc/passwd", b"nope")
+            zf.writestr("good.txt", b"ok")
+
+        dest = tmp_path / "extracted"
+        dest.mkdir()
+        assert archives.extract_archive_tree(archive_path, dest) is True
+
+        found = sorted(
+            p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file()
+        )
+        assert found == ["good.txt"]
+        assert not (tmp_path / "etc").exists()
+
+    def test_empty_archive_returns_false(self, tmp_path):
+        from tests._zipfile_shim import reload_zipfile
+
+        reload_zipfile()
+        import zipfile
+
+        archive_path = tmp_path / "empty.zip"
+        with zipfile.ZipFile(archive_path, "w"):
+            pass
+
+        dest = tmp_path / "extracted"
+        dest.mkdir()
+        assert archives.extract_archive_tree(archive_path, dest) is False
+
+    def test_iso_dispatches_through_the_generic_7z_reader(self, tmp_path):
+        """7z reads ISO9660/UDF natively - no format-specific branch needed,
+        it just needs to go through the same generic path as .7z."""
+        listing = MagicMock(stdout=_fake_7z_listing_sized([("SETUP.EXE", 4)]))
+        popen = _mock_popen_streaming([[b"isox"]], [0])
+
+        dest = tmp_path / "extracted"
+        dest.mkdir()
+        with (
+            patch.object(archives.subprocess, "run", return_value=listing),
+            patch.object(archives.subprocess, "Popen", popen),
+        ):
+            result = archives.extract_archive_tree(Path("/fake/game.iso"), dest)
+
+        assert result is True
+        assert (dest / "SETUP.EXE").read_bytes() == b"isox"
+
+    def test_extraction_failure_returns_false(self, tmp_path):
+        dest = tmp_path / "extracted"
+        dest.mkdir()
+        with patch.object(
+            archives.subprocess, "run", side_effect=FileNotFoundError("no 7zz")
+        ):
+            result = archives.extract_archive_tree(Path("/fake/game.7z"), dest)
+
+        assert result is False

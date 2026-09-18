@@ -650,6 +650,68 @@ def extract_largest_archive_member(file_path: Path, dest_dir: Path) -> Path | No
     return None
 
 
+# Tar-family suffixes read_tar_archive_files understands (tarfile's "r:*"
+# auto-detects the actual compression); everything else that isn't RAR/zip
+# falls through to the generic 7zz-based reader below, which also covers
+# disc images (7z reads ISO9660/UDF natively) and plain .7z.
+_TAR_FAMILY_SUFFIXES: Final = (
+    ".tar",
+    ".tar.gz",
+    ".tgz",
+    ".tar.bz2",
+    ".tbz2",
+    ".tar.xz",
+    ".txz",
+)
+
+
+def _iter_archive_members(
+    file_path: Path,
+) -> Iterator[tuple[str, int, Iterator[bytes]]]:
+    """Dispatch to the right per-format reader based on extension/content."""
+    lower = str(file_path).lower()
+    if _is_rar_archive(file_path):
+        return read_rar_archive_files(file_path, [], [])
+    if lower.endswith(_TAR_FAMILY_SUFFIXES):
+        return read_tar_archive_files(file_path, [], [])
+    if lower.endswith(".zip"):
+        return read_zip_archive_files(file_path, [], [])
+    return read_7z_archive_files(file_path, [], [])
+
+
+def extract_archive_tree(file_path: Path, dest_dir: Path) -> bool:
+    """Extract every member of an archive/disc image into `dest_dir`,
+    preserving its internal directory structure.
+
+    Unlike `extract_largest_archive_member` (one file, for reading a single
+    ROM payload), this is for scanning an archive's full contents - e.g.
+    finding an installer inside a distributor's .zip or a game ISO.
+
+    Returns True if at least one member was written, False on any failure.
+    `dest_dir` is expected to be a fresh, caller-owned directory; on failure
+    whatever was written so far is left as-is for the caller to clean up.
+    """
+    dest_dir = dest_dir.resolve()
+    wrote_any = False
+    try:
+        for name, _size, chunks in _iter_archive_members(file_path):
+            member_path = (dest_dir / name).resolve()
+            if dest_dir != member_path and dest_dir not in member_path.parents:
+                # A member path escaping dest_dir (e.g. "../../etc/passwd") -
+                # skip it rather than write outside the extraction root.
+                log.warning(f"Skipping archive member escaping dest dir: {name}")
+                continue
+            member_path.parent.mkdir(parents=True, exist_ok=True)
+            with member_path.open("wb") as f:
+                for chunk in chunks:
+                    f.write(chunk)
+            wrote_any = True
+    except (ArchiveReadError, OSError) as e:
+        log.error(f"Error extracting archive tree from {file_path}: {e}")
+        return False
+    return wrote_any
+
+
 def is_chd_file(file_path: Path) -> bool:
     """Return True if the file is a CHD by extension or libmagic-detected MIME type."""
     if file_path.suffix.lower() == ".chd":

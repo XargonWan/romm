@@ -320,6 +320,29 @@ def test_update_scan_settings_round_trip(tmp_path):
     assert reloaded.config.PEGASUS_AUTO_EXPORT_ON_SCAN is True
 
 
+def test_update_install_settings_round_trip(tmp_path):
+    config_file = tmp_path / "config.yml"
+    config_file.write_text("install:\n  download_speed_limit_bytes_per_sec: 1000\n")
+    loader = ConfigManager(str(config_file))
+    assert loader.config.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC == 1000
+
+    loader.update_install_settings(download_speed_limit_bytes_per_sec=5_000_000)
+
+    reloaded = ConfigManager(str(config_file))
+    assert reloaded.config.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC == 5_000_000
+
+
+def test_update_install_settings_none_persists_as_unlimited(tmp_path):
+    config_file = tmp_path / "config.yml"
+    config_file.write_text("install:\n  download_speed_limit_bytes_per_sec: 1000\n")
+    loader = ConfigManager(str(config_file))
+
+    loader.update_install_settings(download_speed_limit_bytes_per_sec=None)
+
+    reloaded = ConfigManager(str(config_file))
+    assert reloaded.config.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC is None
+
+
 def test_config_update_preserves_streaming_section(tmp_path):
     """A runtime write (e.g. saving scan settings) must not drop the
     streaming section, which isn't otherwise re-serialized."""

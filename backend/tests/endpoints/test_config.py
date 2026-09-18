@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import status
 
@@ -184,3 +184,60 @@ def test_update_scan_settings_normalizes_codes(client, access_token: str):
     _, kwargs = update_scan_settings.call_args
     assert kwargs["region_priority"] == ["us", "eu"]
     assert kwargs["language_priority"] == ["en"]
+
+
+def test_update_install_settings_payload_shape(client, access_token: str):
+    with (
+        patch.object(cm, "update_install_settings") as update_install_settings,
+        patch(
+            "endpoints.configs.bandwidth.set_bytes_per_second", new=AsyncMock()
+        ) as set_bytes_per_second,
+    ):
+        response = client.put(
+            "/api/config/install",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"download_speed_limit_bytes_per_sec": 500_000},
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    update_install_settings.assert_called_once_with(
+        download_speed_limit_bytes_per_sec=500_000
+    )
+    # The limiter must pick up the new cap immediately, not just on next boot.
+    set_bytes_per_second.assert_called_once_with(500_000)
+
+
+def test_update_install_settings_requires_auth(client):
+    response = client.put(
+        "/api/config/install", json={"download_speed_limit_bytes_per_sec": 500_000}
+    )
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+def test_update_install_settings_rejects_negative_limit(client, access_token: str):
+    with patch.object(cm, "update_install_settings") as update_install_settings:
+        response = client.put(
+            "/api/config/install",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"download_speed_limit_bytes_per_sec": -1},
+        )
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    update_install_settings.assert_not_called()
+
+
+def test_update_install_settings_defaults_to_unlimited(client, access_token: str):
+    with (
+        patch.object(cm, "update_install_settings") as update_install_settings,
+        patch("endpoints.configs.bandwidth.set_bytes_per_second", new=AsyncMock()),
+    ):
+        response = client.put(
+            "/api/config/install",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={},
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    update_install_settings.assert_called_once_with(
+        download_speed_limit_bytes_per_sec=None
+    )
