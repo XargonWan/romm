@@ -16,6 +16,11 @@ class QueuePrio(Enum):
     HIGH = "high"
     DEFAULT = "default"
     LOW = "low"
+    # Separate queue so the main app's own workers (high/default/low, see
+    # docker/init_scripts/init) never dequeue an install job: they run on the
+    # Alpine image, which doesn't carry Wine/Xvfb/bubblewrap. Only the
+    # dedicated install-sandbox worker (Dockerfile.install-sandbox) listens here.
+    INSTALL = "install"
 
 
 redis_client = Redis.from_url(REDIS_URL)
@@ -23,6 +28,7 @@ redis_client = Redis.from_url(REDIS_URL)
 high_prio_queue = Queue(name=QueuePrio.HIGH.value, connection=redis_client)
 default_queue = Queue(name=QueuePrio.DEFAULT.value, connection=redis_client)
 low_prio_queue = Queue(name=QueuePrio.LOW.value, connection=redis_client)
+install_queue = Queue(name=QueuePrio.INSTALL.value, connection=redis_client)
 
 
 def __get_sync_cache() -> Redis:
