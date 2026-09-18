@@ -1,0 +1,585 @@
+<script setup lang="ts">
+// Install — full-page mode for the server-side Windows installer
+// (Proton/Wine + VNC), replacing the old InstallVncOverlay modal. Modeled on
+// EmulatorJS.vue's structure and its data-bp responsive pattern, but unlike
+// /ejs the sidebar and bottom bar stay visible in both the idle and
+// installing states — only the center stage swaps between a start panel,
+// a "starting up" spinner, and the VNC viewport.
+//
+// Reachable two ways: `startInstallAndNavigate` (GameActions/InstallButton)
+// fires the start request while routing here, so a session is usually
+// already in flight by the time this mounts; or a direct visit/bookmark/
+// refresh, where nothing has been requested yet and the start panel's CTA
+// drives the same detect-then-start flow itself.
+import { RAlert, RBtn, RCard, RIcon, RSelect } from "@v2/lib";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
+import { useI18n } from "vue-i18n";
+import { useRoute, useRouter } from "vue-router";
+import { ROUTES } from "@/plugins/router";
+import installApi from "@/services/api/install";
+import romApi from "@/services/api/rom";
+import type { DetailedRom } from "@/stores/roms";
+import { formatBytes } from "@/utils";
+import GameCover from "@/v2/components/shared/GameCover.vue";
+import { useInstallSession } from "@/v2/composables/useInstallSession";
+import { usePageTitle } from "@/v2/composables/usePageTitle";
+
+const { t } = useI18n();
+const route = useRoute();
+const router = useRouter();
+
+const rom = ref<DetailedRom | null>(null);
+const install = useInstallSession(() => rom.value);
+
+const selectedInstallerPath = ref<string | null>(null);
+const selectedProtonBuild = ref<string | null>(null);
+
+// Other clients currently pulling this session's files live, and the
+// server-wide bandwidth cap they all share - polled on the same cadence as
+// useInstallSession's own session poll, but kept separate from it (that
+// composable is also mounted by the ribbon InstallButton, which has no use
+// for this data).
+const STREAM_MANIFEST_POLL_INTERVAL_MS = 3000;
+const viewerCount = ref(0);
+const downloadSpeedLimitBytesPerSec = ref<number | null>(null);
+let streamManifestTimer: ReturnType<typeof setTimeout> | null = null;
+// Reschedule happens inside an async `finally`, so a plain "clear whatever
+// timer id we're tracking" on unmount misses a call that's already in
+// flight when the component goes away - it resolves anyway and schedules a
+// fresh timer regardless. This flag is checked right before every
+// reschedule so an in-flight call becomes a no-op once we're gone.
+let streamManifestStopped = false;
+
+async function pollStreamManifest() {
+  if (!rom.value) return;
+  try {
+    const { data } = await installApi.getInstallStreamManifest(rom.value.id);
+    viewerCount.value = data.viewer_count;
+    downloadSpeedLimitBytesPerSec.value =
+      data.download_speed_limit_bytes_per_sec ?? null;
+  } catch {
+    // No session yet (or it just got cleared) - leave the last-known
+    // values in place rather than flashing back to zero/unlimited.
+  } finally {
+    if (!streamManifestStopped) {
+      streamManifestTimer = setTimeout(
+        pollStreamManifest,
+        STREAM_MANIFEST_POLL_INTERVAL_MS,
+      );
+    }
+  }
+}
+
+onMounted(async () => {
+  const romResponse = await romApi.getRom({
+    romId: parseInt(route.params.rom as string),
+  });
+  rom.value = romResponse.data;
+
+  install.checkExisting();
+  install.checkCandidates();
+  install.fetchProtonBuilds();
+  pollStreamManifest();
+});
+
+onBeforeUnmount(() => {
+  streamManifestStopped = true;
+  if (streamManifestTimer !== null) clearTimeout(streamManifestTimer);
+  vncFocusStopped = true;
+});
+
+// The VNC iframe needs actual DOM focus for the browser to forward keydown
+// events into it at all - without it, some installers (ones that need e.g.
+// an arrow key to advance a page) silently get nothing. Focusing the
+// `<iframe>` element itself isn't enough though: noVNC's own Keyboard.js
+// grabs key events from its *canvas* specifically, inside its own document,
+// which normally only happens via a real click into it. Since the normal
+// deployment is same-origin (see vnc.py's _build_public_url), reach in and
+// focus that canvas directly; noVNC connects asynchronously so the canvas
+// may not exist yet the instant the iframe starts loading, hence the bounded
+// retry. Falls back to just the outer iframe.focus() (still routes real
+// keyboard input, just not guaranteed to arm noVNC's own grab) if
+// contentDocument throws - the cross-origin deployment path
+// (INSTALL_VNC_PUBLIC_BASE_URL unset).
+const vncFrame = ref<HTMLIFrameElement | null>(null);
+let vncFocusStopped = false;
+function tryFocusVncCanvas(attemptsLeft = 15) {
+  const frame = vncFrame.value;
+  if (!frame || vncFocusStopped) return;
+  frame.focus();
+  try {
+    const canvas = frame.contentDocument?.querySelector("canvas");
+    if (canvas) {
+      canvas.focus();
+      return;
+    }
+  } catch {
+    return;
+  }
+  if (attemptsLeft > 0) {
+    setTimeout(() => tryFocusVncCanvas(attemptsLeft - 1), 300);
+  }
+}
+watch(
+  () => install.vncUrl.value,
+  (url) => {
+    if (url) nextTick(() => tryFocusVncCanvas());
+  },
+);
+
+// Pre-fill both pickers the moment their data arrives, but never override a
+// choice the user already made (e.g. candidates re-fetching after a session
+// started).
+watch(install.candidates, (list) => {
+  if (selectedInstallerPath.value == null && list.length > 0) {
+    selectedInstallerPath.value = list[0].path;
+  }
+});
+watch(install.protonBuilds, (list) => {
+  if (selectedProtonBuild.value == null) {
+    selectedProtonBuild.value = list.find((b) => b.installed)?.id ?? null;
+  }
+});
+
+const installerItems = computed(() =>
+  install.candidates.value.map((c) => ({
+    title: c.file_name,
+    value: c.path,
+  })),
+);
+const protonItems = computed(() =>
+  install.protonBuilds.value.map((build) => ({
+    title: build.label,
+    value: build.id,
+    disabled: !build.installed,
+  })),
+);
+
+function startInstall() {
+  install.startWithPath(
+    selectedInstallerPath.value ?? undefined,
+    selectedProtonBuild.value ?? undefined,
+  );
+}
+
+// The main button doubles as Abort while a run is in flight - cancelInstall
+// already gates on its own confirm dialog, nothing extra to wire here.
+function onMainButtonClick() {
+  if (isBusy.value) {
+    install.cancelInstall();
+  } else {
+    startInstall();
+  }
+}
+
+// Same three-state pending copy as InstallButton's ribbon control — kept in
+// sync there rather than shared, since each reads a slightly different
+// prop shape off the same composable.
+const pendingLabel = computed(() => {
+  switch (install.state.value) {
+    case "streaming":
+      return t("rom.install-copying");
+    case "installing":
+      return t("rom.install-starting");
+    default:
+      return t("rom.install-detecting");
+  }
+});
+
+const startCtaLabel = computed(() =>
+  install.hasCache.value ? t("rom.install-reinstall") : t("rom.install"),
+);
+
+function backToRom() {
+  router.push({ name: ROUTES.ROM, params: { rom: rom.value?.id } });
+}
+function backToPlatform() {
+  router.push({
+    name: ROUTES.PLATFORM,
+    params: { platform: rom.value?.platform_id },
+  });
+}
+
+const title = computed(
+  () => rom.value?.name || rom.value?.fs_name_no_ext || "",
+);
+usePageTitle(() =>
+  title.value ? t("rom.install-page-title", { name: title.value }) : null,
+);
+
+const platformLabel = computed(
+  () =>
+    rom.value?.platform_custom_name || rom.value?.platform_display_name || "",
+);
+
+// RBtn's own `loading` prop replaces the label with a spinner rather than
+// showing both - fine for a plain submit button, but this one needs to stay
+// readable (and clickable, as Abort) for the whole (multi-minute) run, so
+// the sidebar button builds its own spinner+label instead of using `loading`.
+const isBusy = computed(() => install.isActive.value || install.starting.value);
+
+const downloadSpeedLimitLabel = computed(() =>
+  downloadSpeedLimitBytesPerSec.value
+    ? t("rom.install-speed-limit-value", {
+        rate: formatBytes(downloadSpeedLimitBytesPerSec.value, 0),
+      })
+    : t("rom.install-speed-limit-unlimited"),
+);
+</script>
+
+<template>
+  <section v-if="rom" class="r-v2-install">
+    <div class="r-v2-install__stage">
+      <!-- VNC bridge is up: this is the installer itself. -->
+      <div v-if="install.vncUrl.value" class="r-v2-install__vnc-wrap">
+        <iframe
+          ref="vncFrame"
+          class="r-v2-install__vnc-frame"
+          :src="install.vncUrl.value"
+          :title="t('rom.install-view')"
+          allow="clipboard-read; clipboard-write; fullscreen"
+          allowfullscreen
+        />
+      </div>
+
+      <!-- Session active but the sandbox hasn't reached the VNC bridge yet. -->
+      <div v-else-if="install.isActive.value" class="r-v2-install__pending">
+        <div class="r-v2-install__spinner" aria-hidden="true" />
+        <p>{{ pendingLabel }}</p>
+      </div>
+
+      <!-- Idle (nothing requested yet) or terminal (done/failed/expired). -->
+      <div v-else class="r-v2-install__start">
+        <GameCover
+          class="r-v2-install__cover"
+          :rom="rom"
+          :title="title"
+          :identified="rom.is_identified ?? true"
+          style-context="player"
+        />
+        <div class="r-v2-install__title-block">
+          <h1 class="r-v2-install__title">
+            {{ title }}
+          </h1>
+          <p class="r-v2-install__subtitle">
+            {{ platformLabel }}
+          </p>
+        </div>
+        <RBtn
+          size="x-large"
+          variant="flat"
+          color="primary"
+          prepend-icon="mdi-download-box-outline"
+          :loading="install.starting.value"
+          @click="startInstall"
+        >
+          {{ startCtaLabel }}
+        </RBtn>
+      </div>
+    </div>
+
+    <RCard class="r-v2-install__sidebar" variant="flat">
+      <div class="r-v2-install__sidebar-head">
+        <RIcon icon="mdi-cog-outline" size="14" />
+        <span>{{ t("common.settings") }}</span>
+      </div>
+      <div class="r-v2-install__sidebar-body">
+        <RAlert type="info" density="compact" variant="translucent">
+          {{ t("rom.install-hint-default-path") }}
+        </RAlert>
+
+        <RBtn
+          block
+          variant="flat"
+          :color="isBusy ? 'error' : 'primary'"
+          :disabled="install.starting.value || install.cancelling.value"
+          @click="onMainButtonClick"
+        >
+          <template #prepend>
+            <span
+              v-if="isBusy"
+              class="r-v2-install__btn-spinner"
+              aria-hidden="true"
+            />
+            <RIcon v-else icon="mdi-download-box-outline" />
+          </template>
+          {{ isBusy ? t("rom.install-abort") : startCtaLabel }}
+        </RBtn>
+
+        <RSelect
+          v-if="installerItems.length > 0"
+          v-model="selectedInstallerPath"
+          variant="outlined"
+          density="comfortable"
+          prepend-inner-icon="mdi-file-outline"
+          hide-details
+          :disabled="install.isActive.value"
+          :label="t('rom.install-select-file')"
+          :items="installerItems"
+        />
+
+        <RSelect
+          v-if="protonItems.length > 0"
+          v-model="selectedProtonBuild"
+          variant="outlined"
+          density="comfortable"
+          prepend-inner-icon="mdi-package-variant-closed"
+          hide-details
+          :disabled="install.isActive.value"
+          :label="t('rom.install-proton-version')"
+          :items="protonItems"
+        />
+
+        <RBtn
+          block
+          variant="outlined"
+          size="small"
+          disabled
+          prepend-icon="mdi-download-outline"
+          class="r-v2-install__proton-download"
+        >
+          {{ t("rom.install-download-proton-disabled-hint") }}
+        </RBtn>
+      </div>
+      <div class="r-v2-install__sidebar-foot">
+        <div class="r-v2-install__meta">
+          <span class="r-v2-install__meta-row">
+            <RIcon icon="mdi-account-multiple-outline" size="14" />
+            {{ t("rom.install-viewers-count", { n: viewerCount }) }}
+          </span>
+          <span class="r-v2-install__meta-row">
+            <RIcon icon="mdi-speedometer" size="14" />
+            {{ downloadSpeedLimitLabel }}
+          </span>
+        </div>
+      </div>
+    </RCard>
+
+    <div class="r-v2-install__bottombar">
+      <RBtn
+        variant="text"
+        size="small"
+        prepend-icon="mdi-arrow-left"
+        @click="backToRom"
+      >
+        {{ t("play.back-to-game-details") }}
+      </RBtn>
+      <RBtn
+        variant="text"
+        size="small"
+        prepend-icon="mdi-view-grid-outline"
+        @click="backToPlatform"
+      >
+        {{ t("play.back-to-gallery") }}
+      </RBtn>
+    </div>
+  </section>
+
+  <section v-else class="r-v2-install__loading">
+    <div class="r-v2-install__spinner" :aria-label="t('common.loading')" />
+  </section>
+</template>
+
+<style scoped>
+.r-v2-install {
+  min-height: calc(100vh - var(--r-nav-h));
+  padding: 24px var(--r-row-pad) 24px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 300px);
+  grid-template-rows: minmax(420px, 1fr) auto;
+  grid-template-areas:
+    "stage sidebar"
+    "bottombar bottombar";
+  gap: 16px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+/* ── Center stage ────────────────────────────────────────── */
+.r-v2-install__stage {
+  grid-area: stage;
+  position: relative;
+  display: flex;
+  border-radius: var(--r-radius-lg);
+  overflow: hidden;
+  background: var(--r-color-canvas-bg);
+  border: 1px solid var(--r-color-border);
+}
+.r-v2-install__vnc-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+.r-v2-install__vnc-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #000;
+}
+
+.r-v2-install__start,
+.r-v2-install__pending {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 32px;
+  text-align: center;
+  color: var(--r-color-fg-secondary);
+}
+.r-v2-install__cover {
+  width: 100%;
+  max-width: 200px;
+  --r-cover-radius: var(--r-radius-md);
+  box-shadow:
+    0 18px 36px color-mix(in srgb, black 55%, transparent),
+    0 0 0 1px var(--r-color-border);
+}
+.r-v2-install__title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.r-v2-install__title {
+  margin: 0;
+  font-size: var(--r-font-size-lg);
+  font-weight: var(--r-font-weight-bold);
+  color: var(--r-color-fg);
+}
+.r-v2-install__subtitle {
+  margin: 0;
+  font-size: var(--r-font-size-sm);
+  color: var(--r-color-fg-muted);
+}
+
+/* ── Right sidebar ───────────────────────────────────────── */
+.r-v2-install__sidebar {
+  grid-area: sidebar;
+  background: var(--r-color-bg-elevated) !important;
+  border: 1px solid var(--r-color-border) !important;
+  border-radius: var(--r-radius-lg) !important;
+  backdrop-filter: blur(18px);
+  display: flex !important;
+  flex-direction: column;
+  overflow: hidden;
+}
+.r-v2-install__sidebar-head {
+  padding: 14px 14px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+  font-weight: var(--r-font-weight-semibold);
+  color: var(--r-color-fg-secondary);
+}
+.r-v2-install__sidebar-body {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+}
+.r-v2-install__sidebar-foot {
+  border-top: 1px solid var(--r-color-border);
+  padding: 6px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.r-v2-install__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 4px 0;
+}
+.r-v2-install__meta-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--r-color-fg-muted);
+}
+
+/* Spinner substitute for RBtn's own `loading` prop, which hides the label
+   entirely - this one needs "Installing…" to stay readable for the whole
+   run, not just show a bare spinner. */
+.r-v2-install__btn-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  animation: r-install-spin 0.8s linear infinite;
+}
+
+/* Long disabled-state label - let it wrap instead of clipping past the
+   sidebar's fixed width. */
+.r-v2-install__proton-download {
+  height: auto !important;
+  min-height: 36px;
+  padding-block: 6px;
+}
+.r-v2-install__proton-download :deep(.r-btn__label) {
+  white-space: normal;
+  text-align: left;
+  line-height: 1.25;
+}
+
+/* ── Bottom bar ──────────────────────────────────────────── */
+.r-v2-install__bottombar {
+  grid-area: bottombar;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-top: 1px solid var(--r-color-border);
+  padding-top: 10px;
+}
+
+/* ── Loading / pending spinner ──────────────────────────────── */
+.r-v2-install__spinner {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 2px solid var(--r-color-surface-hover);
+  border-top-color: var(--r-color-brand-primary);
+  animation: r-install-spin 0.8s linear infinite;
+}
+@keyframes r-install-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.r-v2-install__loading {
+  min-height: calc(100vh - var(--r-nav-h));
+  display: grid;
+  place-items: center;
+}
+
+/* ── Responsive ──────────────────────────────────────────── */
+html[data-bp~="sm-and-down"] .r-v2-install {
+  grid-template-columns: 1fr;
+  grid-template-rows: auto auto auto;
+  grid-template-areas:
+    "stage"
+    "sidebar"
+    "bottombar";
+}
+html[data-bp~="sm-and-down"] .r-v2-install__stage {
+  min-height: 280px;
+}
+</style>
