@@ -12,6 +12,8 @@
   "empty-upload-title": "직접 업로드",
   "no-games-yet": "아직 추가된 게임이 없습니다.",
   "recently-added": "최근에 추가됨",
+  "widget-active-installers": "진행 중인 설치",
+  "widget-active-installers-installed": "설치됨",
   "widget-library-favorites": "즐겨찾기",
   "widget-library-screenshots": "스크린샷",
   "widget-library-stats": "라이브러리 통계",

@@ -12,6 +12,8 @@
   "empty-upload-title": "手動でアップロード",
   "no-games-yet": "ゲームはまだ追加されていません。",
   "recently-added": "最近追加",
+  "widget-active-installers": "実行中のインストール",
+  "widget-active-installers-installed": "インストール済み",
   "widget-library-favorites": "お気に入り",
   "widget-library-screenshots": "スクリーンショット",
   "widget-library-stats": "ライブラリ統計",

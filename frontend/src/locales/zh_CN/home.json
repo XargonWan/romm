@@ -12,6 +12,8 @@
   "empty-upload-title": "手动上传",
   "no-games-yet": "尚未添加任何游戏。",
   "recently-added": "最新添加",
+  "widget-active-installers": "正在进行的安装",
+  "widget-active-installers-installed": "已安装",
   "widget-library-favorites": "收藏",
   "widget-library-screenshots": "截图",
   "widget-library-stats": "库统计",
