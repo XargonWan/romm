@@ -23,6 +23,69 @@ class RomNotFoundInDatabaseException(Exception):
         return self.message
 
 
+class InstallSessionNotFoundException(Exception):
+    def __init__(self, rom_id):
+        self.message = f"No install session found for rom with id '{rom_id}'"
+        super().__init__(self.message)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=self.message)
+
+    def __repr__(self) -> str:
+        return self.message
+
+
+class InstallSessionRunningException(Exception):
+    def __init__(self, rom_id):
+        self.message = (
+            f"Install for rom '{rom_id}' is still running; "
+            "wait for it to finish (or fail) before clearing its cache"
+        )
+        super().__init__(self.message)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=self.message)
+
+    def __repr__(self) -> str:
+        return self.message
+
+
+class InstallSessionNotActiveException(Exception):
+    def __init__(self, rom_id):
+        self.message = f"No running install for rom '{rom_id}' to cancel"
+        super().__init__(self.message)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=self.message)
+
+    def __repr__(self) -> str:
+        return self.message
+
+
+class InstallWorkerUnavailableException(Exception):
+    def __init__(self):
+        self.message = (
+            "No install worker is currently connected; the install-sandbox "
+            "worker may not be running. Try again once it's up."
+        )
+        super().__init__(self.message)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=self.message
+        )
+
+    def __repr__(self) -> str:
+        return self.message
+
+
+class InstallConcurrencyLimitException(Exception):
+    def __init__(self, max_concurrency: int):
+        self.message = (
+            f"Maximum of {max_concurrency} concurrent install(s) already running; "
+            "try again once one finishes"
+        )
+        super().__init__(self.message)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=self.message
+        )
+
+    def __repr__(self) -> str:
+        return self.message
+
+
 class CollectionNotFoundInDatabaseException(Exception):
     def __init__(self, id):
         self.message = f"Collection with id '{id}' not found"
