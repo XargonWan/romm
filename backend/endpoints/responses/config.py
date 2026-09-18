@@ -37,3 +37,4 @@ class ConfigResponse(TypedDict):
     GAMELIST_MEDIA_THUMBNAIL: MetadataMediaType
     GAMELIST_MEDIA_IMAGE: MetadataMediaType
     PEGASUS_AUTO_EXPORT_ON_SCAN: bool
+    INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC: int | None

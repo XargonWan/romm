@@ -14,6 +14,7 @@ class Scope(enum.StrEnum):
     ME_WRITE = "me.write"
     ROMS_READ = "roms.read"
     ROMS_WRITE = "roms.write"
+    ROMS_INSTALL = "roms.install"
     ROMS_USER_READ = "roms.user.read"
     ROMS_USER_WRITE = "roms.user.write"
     PLATFORMS_READ = "platforms.read"
@@ -57,6 +58,7 @@ WRITE_SCOPES_MAP: Final = {
 
 EDIT_SCOPES_MAP: Final = {
     Scope.ROMS_WRITE: "Modify ROMs",
+    Scope.ROMS_INSTALL: "Install ROMs remotely",
     Scope.PLATFORMS_WRITE: "Modify platforms",
     Scope.FIRMWARE_WRITE: "Modify firmware",
 }

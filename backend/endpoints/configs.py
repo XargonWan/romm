@@ -15,6 +15,7 @@ from decorators.auth import protected_route
 from endpoints.responses.config import ConfigResponse
 from exceptions.config_exceptions import ConfigNotWritableException
 from handler.auth.constants import Scope
+from handler.install import bandwidth
 from logger.logger import log
 from utils.router import APIRouter
 
@@ -101,6 +102,24 @@ class ScanSettingsPayload(BaseModel):
         return value
 
 
+class InstallSettingsPayload(BaseModel):
+    """Global stream-install settings.
+
+    ``download_speed_limit_bytes_per_sec`` is a single server-wide cap shared
+    by every concurrent install download (see handler.install.bandwidth), not
+    a per-game setting - ``None``/``0`` means unlimited.
+    """
+
+    download_speed_limit_bytes_per_sec: int | None = None
+
+    @field_validator("download_speed_limit_bytes_per_sec")
+    @classmethod
+    def validate_limit(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("download_speed_limit_bytes_per_sec must not be negative")
+        return value
+
+
 @router.get("")
 def get_config(request: Request) -> ConfigResponse:
     """Get config endpoint
@@ -150,6 +169,7 @@ def get_config(request: Request) -> ConfigResponse:
         GAMELIST_MEDIA_THUMBNAIL=cfg.GAMELIST_MEDIA_THUMBNAIL,
         GAMELIST_MEDIA_IMAGE=cfg.GAMELIST_MEDIA_IMAGE,
         PEGASUS_AUTO_EXPORT_ON_SCAN=cfg.PEGASUS_AUTO_EXPORT_ON_SCAN,
+        INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC=cfg.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC,
     )
 
 
@@ -275,3 +295,26 @@ async def update_scan_settings(request: Request, payload: ScanSettingsPayload) -
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.message
         ) from exc
+
+
+@protected_route(router.put, "/install", [Scope.PLATFORMS_WRITE])
+async def update_install_settings(
+    request: Request, payload: InstallSettingsPayload
+) -> None:
+    """Replace the install.* section of the configuration.
+
+    Also pushes the new bandwidth cap into the live limiter (see
+    handler.install.bandwidth) so every worker process picks it up
+    immediately, not just the one that handled this request.
+    """
+    try:
+        cm.update_install_settings(
+            download_speed_limit_bytes_per_sec=payload.download_speed_limit_bytes_per_sec
+        )
+    except ConfigNotWritableException as exc:
+        log.critical(exc.message)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.message
+        ) from exc
+
+    await bandwidth.set_bytes_per_second(payload.download_speed_limit_bytes_per_sec)

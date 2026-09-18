@@ -92,6 +92,7 @@ from utils.zip_cache import (
 )
 
 from .files import router as files_router
+from .install import router as install_router
 from .manual import router as manual_router
 from .notes import router as notes_router
 from .patch import router as patch_router
@@ -105,6 +106,7 @@ router = APIRouter(
 )
 router.include_router(upload_router)
 router.include_router(files_router)
+router.include_router(install_router)
 router.include_router(manual_router)
 router.include_router(soundtrack_router)
 router.include_router(screenshot_router)
