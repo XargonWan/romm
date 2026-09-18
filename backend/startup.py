@@ -16,7 +16,9 @@ from config import (
     SENTRY_DSN,
     TASK_TIMEOUT,
 )
+from config.config_manager import config_manager as cm
 from handler.database import db_save_handler
+from handler.install import bandwidth
 from handler.metadata.base_handler import (
     MAME_XML_KEY,
     METADATA_FIXTURES_DIR,
@@ -32,6 +34,7 @@ from models.firmware import FIRMWARE_FIXTURES_DIR, KNOWN_BIOS_KEY
 from tasks.manual.recompute_save_content_hashes import (
     recompute_save_content_hashes_task,
 )
+from tasks.scheduled.cleanup_install_cache import cleanup_install_cache_task
 from tasks.scheduled.cleanup_netplay import cleanup_netplay_task
 from tasks.scheduled.cleanup_orphaned_resources import cleanup_orphaned_resources_task
 from tasks.scheduled.cleanup_upload_tmp import cleanup_upload_tmp_task
@@ -143,6 +146,7 @@ async def main() -> None:
         # Initialize scheduled tasks
         cleanup_netplay_task.init()
         cleanup_zip_cache_task.init()
+        cleanup_install_cache_task.init()
         cleanup_upload_tmp_task.init()
         cleanup_orphaned_resources_task.init()
 
@@ -167,6 +171,14 @@ async def main() -> None:
             sync_push_pull_task.init()
 
         _enqueue_recompute_save_hashes_if_needed()
+
+        # Seed the shared bandwidth-limiter's Redis mirror from the persisted
+        # config once at boot - it's ephemeral, so a configured cap would
+        # otherwise silently go unlimited again after a Redis restart until
+        # an admin happened to re-save the setting.
+        await bandwidth.set_bytes_per_second(
+            cm.get_config().INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC
+        )
 
         log.info("Initializing cache with fixtures data")
         await conditionally_set_cache(

@@ -40,6 +40,55 @@ ASSETS_BASE_PATH: Final[str] = f"{ROMM_BASE_PATH}/assets"
 ZIP_CACHE_PATH: Final[str] = f"{ROMM_BASE_PATH}/cache/zips"
 FRONTEND_RESOURCES_PATH: Final[str] = "/assets/romm/resources"
 
+# REMOTE INSTALL
+# Per-install working dirs (installer prefix + installed game files) are staged
+# here; each install session gets its own subdirectory keyed by session id.
+INSTALL_CACHE_PATH: Final[str] = f"{ROMM_BASE_PATH}/cache/installs"
+# Default lifetime of an install cache before the cleanup task evicts it.
+INSTALL_CACHE_DEFAULT_TTL: Final[int] = safe_int(
+    _get_env("INSTALL_CACHE_DEFAULT_TTL"),
+    172800,  # 48 hours
+)
+# Upper bound on concurrent install sessions to bound CPU/RAM/disk use.
+INSTALL_MAX_CONCURRENCY: Final[int] = max(
+    1, safe_int(_get_env("INSTALL_MAX_CONCURRENCY"), 1)
+)
+# Hard cap on how long a single install run may take before it is killed.
+INSTALL_TIMEOUT: Final[int] = safe_int(_get_env("INSTALL_TIMEOUT"), 3600)  # 1 hour
+# No on/off flag here on purpose: whether remote install is offered is purely
+# dynamic, driven by whether an install-sandbox worker is actually connected
+# right now (see handler.install.queue_status.has_install_worker). Deploying
+# that separate, privileged worker container is itself the opt-in.
+# Sandbox: run the installer under bubblewrap. Disable only for trusted dev setups.
+INSTALL_SANDBOX_ENABLED: Final[bool] = safe_str_to_bool(
+    _get_env("INSTALL_SANDBOX_ENABLED") or "true"
+)
+# RomM's own public base URL (e.g. https://romm.example.com), used to build
+# the path-based "View install" VNC link. The backend itself proxies
+# /roms/install/vnc/<port>/... through to the install-worker (see
+# endpoints/roms/install.py's install_vnc_http/install_vnc_ws), gated on the
+# owning user's session - the worker's dynamic port range is never exposed
+# directly, and nginx (or a dev proxy) only needs to forward /api like any
+# other route, no special-cased location. Leave unset only for bare-metal/dev
+# setups where the worker's ports are reachable as-is from the browser.
+INSTALL_VNC_PUBLIC_BASE_URL: Final[str | None] = _get_env("INSTALL_VNC_PUBLIC_BASE_URL")
+# Port range for the per-session websockify/noVNC listeners.
+INSTALL_VNC_PORT_MIN: Final[int] = safe_int(_get_env("INSTALL_VNC_PORT_MIN"), 6900)
+INSTALL_VNC_PORT_MAX: Final[int] = safe_int(_get_env("INSTALL_VNC_PORT_MAX"), 6999)
+# Compose service name (or host) of the remote-install sandbox worker the
+# backend proxies VNC traffic to. Only resolved when a "View install" request
+# actually comes in.
+INSTALL_WORKER_HOST: Final[str] = (
+    _get_env("INSTALL_WORKER_HOST") or "romm-install-sandbox"
+)
+# Proton/Wine builds used to run Windows installers - the sandbox image bundles
+# both GE-Proton (INSTALL_PROTON_PATH, the default when a session picks no
+# build) and Proton-CachyOS (INSTALL_PROTON_CACHYOS_PATH, selectable) side by
+# side, so one still works if the other doesn't for a given installer.
+# TODO: proton manager (Phase future).
+INSTALL_PROTON_PATH: Final[str | None] = _get_env("INSTALL_PROTON_PATH")
+INSTALL_PROTON_CACHYOS_PATH: Final[str | None] = _get_env("INSTALL_PROTON_CACHYOS_PATH")
+
 # ROM UPLOADS
 # Chunked upload parts are staged on disk, under RESOURCES_BASE_PATH by default.
 ROM_UPLOAD_TMP_BASE: Final[Path] = (
@@ -54,7 +103,8 @@ SEVEN_ZIP_TIMEOUT: Final[int] = safe_int(_get_env("SEVEN_ZIP_TIMEOUT"), 60)
 ROM_PATCHER_TIMEOUT: Final[int] = safe_int(_get_env("ROM_PATCHER_TIMEOUT"), 120)
 # RomPatcher.js loads the whole ROM into memory in Node, so cap inputs to avoid OOM.
 ROM_PATCHER_MAX_FILE_SIZE_BYTES: Final[int] = safe_int(
-    _get_env("ROM_PATCHER_MAX_FILE_SIZE_BYTES"), 4 * 1024 * 1024 * 1024  # 4 GiB
+    _get_env("ROM_PATCHER_MAX_FILE_SIZE_BYTES"),
+    4 * 1024 * 1024 * 1024,  # 4 GiB
 )
 # Limit concurrent patch subprocesses to bound total memory use.
 ROM_PATCHER_MAX_CONCURRENCY: Final[int] = max(
@@ -266,7 +316,8 @@ ENABLE_SYNC_FOLDER_WATCHER: Final[bool] = safe_str_to_bool(
     _get_env("ENABLE_SYNC_FOLDER_WATCHER")
 )
 SYNC_FOLDER_SCAN_DELAY: Final[int] = safe_int(
-    _get_env("SYNC_FOLDER_SCAN_DELAY"), 2  # 2 minutes
+    _get_env("SYNC_FOLDER_SCAN_DELAY"),
+    2,  # 2 minutes
 )
 ENABLE_SYNC_PUSH_PULL: Final[bool] = safe_str_to_bool(_get_env("ENABLE_SYNC_PUSH_PULL"))
 SYNC_PUSH_PULL_CRON: Final[str] = _get_env(
@@ -290,7 +341,8 @@ DISABLE_LOGS_VIEWER: Final[bool] = safe_str_to_bool(_get_env("DISABLE_LOGS_VIEWE
 
 # ASSETS
 MAX_ASSET_UPLOAD_SIZE_BYTES: Final[int] = safe_int(
-    _get_env("MAX_ASSET_UPLOAD_SIZE_BYTES"), 512 * 1024 * 1024  # 512 MiB
+    _get_env("MAX_ASSET_UPLOAD_SIZE_BYTES"),
+    512 * 1024 * 1024,  # 512 MiB
 )
 MAX_AUTOCLEANUP_LIMIT: Final[int] = max(
     1, safe_int(_get_env("MAX_AUTOCLEANUP_LIMIT"), 100)

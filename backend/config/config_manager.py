@@ -204,6 +204,9 @@ class Config:
     GAMELIST_MEDIA_IMAGE: MetadataMediaType
     STREAMING_ENABLED: bool
     STREAMING_CONTAINERS: list[StreamingContainer]
+    # Global cap shared by every concurrent stream-install download, in
+    # bytes/sec. None (or <= 0) means unlimited. See handler.install.bandwidth.
+    INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC: int | None
 
     def __init__(self, **entries):
         self.__dict__.update(entries)
@@ -539,6 +542,9 @@ class ConfigManager:
             STREAMING_CONTAINERS=pydash.get(
                 self._raw_config, "streaming.containers", []
             ),
+            INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC=pydash.get(
+                self._raw_config, "install.download_speed_limit_bytes_per_sec", None
+            ),
         )
 
     def _get_ejs_controls(self) -> dict[str, EjsControls]:
@@ -833,6 +839,16 @@ class ConfigManager:
             log.critical("Invalid config.yml: streaming.containers must be a list")
             sys.exit(3)
 
+        if self.config.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC is not None and (
+            not isinstance(self.config.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC, int)
+            or self.config.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC < 0
+        ):
+            log.critical(
+                "Invalid config.yml: install.download_speed_limit_bytes_per_sec "
+                "must be a non-negative integer"
+            )
+            sys.exit(3)
+
     def get_config(self) -> Config:
         try:
             with open(self.config_file, "r") as config_file:
@@ -914,6 +930,11 @@ class ConfigManager:
                 "pegasus": {
                     "export": self.config.PEGASUS_AUTO_EXPORT_ON_SCAN,
                 },
+            },
+            "install": {
+                "download_speed_limit_bytes_per_sec": (
+                    self.config.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC
+                ),
             },
         }
 
@@ -1037,6 +1058,21 @@ class ConfigManager:
         self.config.GAMELIST_MEDIA_THUMBNAIL = MetadataMediaType(gamelist_thumbnail)
         self.config.GAMELIST_MEDIA_IMAGE = MetadataMediaType(gamelist_image)
         self.config.PEGASUS_AUTO_EXPORT_ON_SCAN = pegasus_export
+        self._update_config_file()
+
+    def update_install_settings(
+        self, *, download_speed_limit_bytes_per_sec: int | None
+    ) -> None:
+        """Set the global stream-install bandwidth cap and persist it.
+
+        Shared by every concurrent install download (see
+        handler.install.bandwidth) - the endpoint that calls this is also
+        responsible for pushing the new value into that limiter, since this
+        module stays free of any handler-layer import.
+        """
+        self.config.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC = (
+            download_speed_limit_bytes_per_sec
+        )
         self._update_config_file()
 
 
