@@ -38,6 +38,9 @@ __pycache__
 # secrets
 .env
 
+# local port remaps and other machine-specific dev overrides
+docker-compose.override.yml
+
 # database
 mariadb
 *.sqlite
@@ -86,3 +89,8 @@ frontend/test-results/
 frontend/playwright-report/
 frontend/blob-report/
 frontend/.last-run.json
+
+# Personal TODOS
+*.todo
+TODO.*
+*TODO*.*

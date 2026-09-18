@@ -172,6 +172,11 @@ export default defineConfig(({ mode }) => {
           target: `http://127.0.0.1:${backendPort}`,
           changeOrigin: false,
           secure: false,
+          // The install VNC bridge (/api/roms/install/vnc/<port>/...) opens a
+          // websocket under this same prefix once the noVNC page loads; ws
+          // support here doesn't affect any of the other, plain HTTP /api
+          // calls (Vite only upgrades a request that actually asks to).
+          ws: true,
         },
         "^/(?:ws|netplay)": {
           target: `http://127.0.0.1:${backendPort}`,

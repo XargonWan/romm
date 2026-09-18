@@ -31,6 +31,7 @@ export const ROUTES = {
   SMART_COLLECTION: "smart-collection",
   ROM: "rom",
   EMULATORJS: "emulatorjs",
+  INSTALL: "install",
   RUFFLE: "ruffle",
   STREAM: "stream",
   SCAN: "scan",
@@ -252,6 +253,16 @@ const routes = [
         components: {
           default: () => import("@/views/Player/EmulatorJS/Base.vue"),
           v2: v2For(ROUTES.EMULATORJS),
+        },
+      },
+      {
+        path: "rom/:rom/install",
+        name: ROUTES.INSTALL,
+        components: {
+          // v1 has no install feature; degrade to the plain rom page for a
+          // v1-mode user who somehow lands on this URL directly.
+          default: () => import("@/views/GameDetails.vue"),
+          v2: v2For(ROUTES.INSTALL),
         },
       },
       {

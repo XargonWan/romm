@@ -24,6 +24,9 @@
 //     existing ROM today). Other subtabs render a disabled Upload
 //     button with a tooltip so the affordance is visible but truthful
 //     about its current reach.
+//   * Install Cache is the one exception: Upload makes no sense there,
+//     so its header hosts "Clear install cache" (danger, confirm-gated)
+//     instead.
 //
 // Content column:
 //   * Section header (Upload + Patch)
@@ -40,14 +43,16 @@
 // row is dropped via `DELETE /roms/{rom_id}/files/{file_id}`.
 import { RBtn, RCheckbox, REmptyState, RIcon, RTooltip } from "@v2/lib";
 import axios from "axios";
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 import type {
   DetailedRomSchema,
+  InstallFileSchema,
   RomFileCategory,
   RomFileSchema,
 } from "@/__generated__";
+import installApi from "@/services/api/install";
 import romApi from "@/services/api/rom";
 import storeRoms from "@/stores/roms";
 import { getDownloadLink } from "@/utils";
@@ -56,6 +61,7 @@ import { useConfirm } from "@/v2/composables/useConfirm";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
 import FileRow from "./FileRow.vue";
 import FilesSummary from "./FilesSummary.vue";
+import InstallCacheFileRow from "./InstallCacheFileRow.vue";
 
 defineOptions({ inheritAttrs: false });
 
@@ -168,7 +174,72 @@ const FOLDER_META = computed<Record<string, FolderMeta>>(() => {
 });
 
 const ROOT = "__root__" as const;
-type Subtab = "all" | typeof ROOT | string;
+const INSTALL_CACHE = "__install_cache__" as const;
+type Subtab = "all" | typeof ROOT | typeof INSTALL_CACHE | string;
+
+// ---------- Install cache ("Installer Cache" subtab) ----------
+// A finished server-side install (see useInstallSession) leaves its own
+// file set behind, separate from the ROM's own library files above -
+// fetched once per ROM and shown as a subtab only when it actually has
+// something (404 = no cache, handled silently).
+const installFiles = ref<InstallFileSchema[] | null>(null);
+
+async function loadInstallFiles() {
+  try {
+    const { data } = await installApi.getInstallFiles(props.rom.id);
+    installFiles.value = data.files;
+  } catch {
+    installFiles.value = null;
+  }
+}
+
+onMounted(loadInstallFiles);
+watch(() => props.rom.id, loadInstallFiles);
+
+function installFileDownloadPath(file: InstallFileSchema): string {
+  // The stream endpoint transparently falls through to the exact same
+  // complete-file behavior once a file is done (see
+  // download_install_stream_file), so this is a strict superset of the old
+  // endpoint - and if this tab ever starts listing files while an install
+  // is still running, the same link keeps working (Range-resumable against
+  // whatever's sealed so far) without another change here.
+  return installApi.getInstallStreamFileDownloadPath(props.rom.id, file.path);
+}
+
+// "Clear install cache" lives here (in place of Upload, which makes no
+// sense for this subtab) rather than on the Install page/ribbon - a plain
+// local action instead of pulling in the full useInstallSession poll loop
+// just for this one button.
+const clearingInstallCache = ref(false);
+
+async function clearInstallCache() {
+  const ok = await confirm({
+    title: t("rom.install-confirm-clear-title"),
+    body: t("rom.install-confirm-clear-body"),
+    confirmText: t("rom.install-clear-cache"),
+    tone: "danger",
+    requireTyped: "DELETE",
+  });
+  if (!ok) return;
+
+  clearingInstallCache.value = true;
+  try {
+    await installApi.clearInstallCache(props.rom.id);
+    installFiles.value = null;
+    snackbar.success(t("rom.install-snackbar-cache-cleared"), {
+      icon: "mdi-check-bold",
+    });
+  } catch (err) {
+    snackbar.error(
+      t("rom.install-snackbar-clear-failed", {
+        detail: errorMessage(err),
+      }),
+      { icon: "mdi-alert-circle-outline" },
+    );
+  } finally {
+    clearingInstallCache.value = false;
+  }
+}
 
 // ---------- File ordering + folder extraction ----------
 // Sort by relative path so multi-disc / nested layouts stay stable
@@ -279,6 +350,17 @@ const subtabDefs = computed<SubtabDef[]>(() => {
       label: t("rom.folder-root"),
       icon: folderIcon(ROOT),
       count: rootList.length,
+    });
+  }
+  // Installer Cache sits right after Root, ahead of the alphabetical
+  // folder list - it's a whole separate file set (a finished server-side
+  // install), not a subfolder of the ROM's own library files.
+  if (installFiles.value && installFiles.value.length > 0) {
+    out.push({
+      id: INSTALL_CACHE,
+      label: t("rom.install-cache-tab"),
+      icon: "mdi-cog-box",
+      count: installFiles.value.length,
     });
   }
   const folders = [...filesByFolder.value.keys()]
@@ -744,7 +826,47 @@ const currentUploadState = computed<SubtabUploadState>(() => {
       </ul>
     </aside>
 
-    <div class="r-v2-files__content">
+    <div v-if="subTab === INSTALL_CACHE" class="r-v2-files__content">
+      <!-- Installer Cache: a finished server-side install's own file set,
+           unrelated to the ROM's library files above - no upload/select/
+           delete story, just a list with a verifiable hash and a download
+           link per file (see InstallCacheFileRow). Upload makes no sense
+           here, so the header hosts Clear install cache instead. -->
+      <header
+        v-if="installFiles && installFiles.length > 0"
+        class="r-v2-files__section-head"
+      >
+        <RBtn
+          variant="outlined"
+          size="small"
+          color="error"
+          prepend-icon="mdi-database-remove"
+          :loading="clearingInstallCache"
+          @click="clearInstallCache"
+        >
+          {{ t("rom.install-clear-cache") }}
+        </RBtn>
+      </header>
+
+      <REmptyState
+        v-if="!installFiles || installFiles.length === 0"
+        icon="mdi-folder-off-outline"
+        :title="t('rom.no-files-in-category')"
+        :hint="t('rom.no-files-in-category-hint')"
+      />
+      <ul v-else class="r-v2-files__list">
+        <InstallCacheFileRow
+          v-for="(file, i) in installFiles"
+          :key="file.path"
+          class="r-v2-asset-fade"
+          :style="{ '--asset-fade-i': i }"
+          :file="file"
+          :download-path="installFileDownloadPath(file)"
+        />
+      </ul>
+    </div>
+
+    <div v-else class="r-v2-files__content">
       <!-- Section header — the sidebar's subtab label already names the
            section, so the header skips a redundant title and just hosts
            the Upload button on the right. Download-all / Copy-link are
