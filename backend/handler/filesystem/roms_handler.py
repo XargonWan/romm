@@ -51,6 +51,11 @@ from .base_handler import (
     REGIONS_NAME_KEYS,
     FSHandler,
 )
+from .installer_detection import (
+    DetectedFile,
+    InstallerCandidate,
+    detect_installer_candidates,
+)
 
 # PICO-8 cartridges are often stored as PNG files
 PICO8_CARTRIDGE_EXTENSION = ".p8.png"
@@ -611,6 +616,60 @@ class FSRomsHandler(FSHandler):
             ),
             ra_hash=rom_ra_h,
         )
+
+    def get_rom_root_abs_path(self, rom: Rom) -> Path:
+        """Absolute path of the ROM's own directory (or file) in the library."""
+        rel_roms_path = self.get_roms_fs_structure(rom.platform.fs_slug)
+        abs_fs_path = self.validate_path(rel_roms_path)
+        return Path(abs_fs_path, rom.fs_name)
+
+    def list_rom_files_flat(self, rom: Rom) -> list[DetectedFile]:
+        """List every file under a ROM as POSIX-relative paths with sizes.
+
+        Used by installer detection and remote-install stream-copy. For a
+        single-file ROM the only entry is the file itself. For a directory ROM
+        this walks recursively. Paths are relative to the ROM's own directory
+        (or the file name for single files).
+        """
+        rom_root = self.get_rom_root_abs_path(rom)
+
+        detected: list[DetectedFile] = []
+        if rom_root.is_dir():
+            for f_path, file_name in iter_files(str(rom_root), recursive=True):
+                abs_file = Path(f_path, file_name)
+                try:
+                    size = abs_file.stat().st_size
+                except OSError:
+                    continue
+                rel = abs_file.relative_to(rom_root).as_posix()
+                detected.append(DetectedFile(path=rel, size_bytes=size))
+        else:
+            try:
+                size = rom_root.stat().st_size
+            except OSError:
+                size = 0
+            detected.append(DetectedFile(path=rom.fs_name, size_bytes=size))
+        return detected
+
+    def get_installer_candidates(self, rom: Rom) -> list[InstallerCandidate]:
+        """Detect and rank installer candidates inside a ROM's directory."""
+        return detect_installer_candidates(self.list_rom_files_flat(rom))
+
+    def resolve_installer_abs_path(self, rom: Rom, installer_rel_path: str) -> str:
+        """Resolve a ROM-relative installer path to a validated absolute path.
+
+        Guards against path traversal: the resolved path must stay inside the
+        ROM's own directory.
+        """
+        rom_root = self.get_rom_root_abs_path(rom).resolve()
+        candidate = (rom_root / installer_rel_path).resolve()
+        if rom_root != candidate and rom_root not in candidate.parents:
+            # Surfaced as the install session's user-facing error; "game" (not
+            # "ROM") since this only ever fires for the Windows install flow.
+            raise ValueError("Installer path escapes the game's directory")
+        if not candidate.is_file():
+            raise FileNotFoundError(f"Installer not found: {installer_rel_path}")
+        return str(candidate)
 
     def _calculate_rom_hashes(
         self,
