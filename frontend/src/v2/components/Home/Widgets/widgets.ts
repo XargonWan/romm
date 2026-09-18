@@ -5,17 +5,19 @@
 // add the toggle key in `useUISettings`. Both the `WidgetBar` and the
 // settings reorder list pick it up automatically.
 import type { Component } from "vue";
+import ActiveInstallersWidget from "./ActiveInstallersWidget.vue";
 import LibraryStatsWidget from "./LibraryStatsWidget.vue";
 import RandomPickWidget from "./RandomPickWidget.vue";
 
-export type WidgetId = "randomPick" | "libraryStats";
+export type WidgetId = "randomPick" | "libraryStats" | "activeInstallers";
 
 export interface WidgetDef {
   id: WidgetId;
   /** The component to render. */
   component: Component;
   /** Key in `useUISettings` that controls visibility. */
-  enabledKey: "widgetRandomPick" | "widgetLibraryStats";
+  enabledKey:
+    "widgetRandomPick" | "widgetLibraryStats" | "widgetActiveInstallers";
   /** i18n key for the user-facing label (settings reorder list). */
   labelKey: string;
   /** Optional MDI icon used in the reorder list. */
@@ -36,6 +38,13 @@ export const WIDGETS: readonly WidgetDef[] = [
     enabledKey: "widgetLibraryStats",
     labelKey: "settings.widget-library-stats",
     icon: "mdi-chart-box-outline",
+  },
+  {
+    id: "activeInstallers",
+    component: ActiveInstallersWidget,
+    enabledKey: "widgetActiveInstallers",
+    labelKey: "settings.widget-active-installers",
+    icon: "mdi-monitor-eye",
   },
 ];
 

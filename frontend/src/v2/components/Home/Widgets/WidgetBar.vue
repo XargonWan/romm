@@ -4,19 +4,32 @@
 // Home → Widgets), the visible set by per-widget toggles. The rail
 // itself disappears when every widget is off — no empty rail taking
 // up vertical space.
-import { computed } from "vue";
+import { computed, onMounted } from "vue";
 import { useUISettings } from "@/composables/useUISettings";
+import { useInstallDashboard } from "@/v2/composables/useInstallDashboard";
 import { parseWidgetOrder, WIDGETS } from "./widgets";
 
 defineOptions({ inheritAttrs: false });
 
 const settings = useUISettings();
-const { widgetRandomPick, widgetLibraryStats, libraryStatsMode, widgetOrder } =
-  settings;
+const {
+  widgetRandomPick,
+  widgetLibraryStats,
+  widgetActiveInstallers,
+  libraryStatsMode,
+  widgetOrder,
+} = settings;
 
 const statsMode = computed<"compact" | "extended">(() =>
   libraryStatsMode.value === "extended" ? "extended" : "compact",
 );
+
+// Active Installers is content-gated on top of its settings toggle (see
+// widgets.ts) - it has nothing to show, and shouldn't render, when this
+// user has no active/cached install sessions. Fetched once here (not per-
+// widget) so the empty check below and the widget's own render agree.
+const installDashboard = useInstallDashboard();
+onMounted(installDashboard.refresh);
 
 // Materialize the ordered list of currently-enabled widgets. Each
 // entry pairs the registry def with the component-specific props
@@ -26,16 +39,30 @@ const orderedWidgets = computed(() => {
   return order
     .map((id) => WIDGETS.find((w) => w.id === id))
     .filter((w): w is (typeof WIDGETS)[number] => Boolean(w))
-    .filter((w) => Boolean(settings[w.enabledKey].value));
+    .filter((w) => Boolean(settings[w.enabledKey].value))
+    .filter(
+      (w) =>
+        w.id !== "activeInstallers" ||
+        installDashboard.entries.value.length > 0,
+    );
 });
 
 function widgetProps(id: string): Record<string, unknown> {
   if (id === "libraryStats") return { mode: statsMode.value };
+  if (id === "activeInstallers") {
+    return {
+      entries: installDashboard.entries.value,
+      loading: installDashboard.loading.value,
+    };
+  }
   return {};
 }
 
 const anyEnabled = computed(
-  () => widgetRandomPick.value || widgetLibraryStats.value,
+  () =>
+    widgetRandomPick.value ||
+    widgetLibraryStats.value ||
+    (widgetActiveInstallers.value && installDashboard.entries.value.length > 0),
 );
 </script>
 
