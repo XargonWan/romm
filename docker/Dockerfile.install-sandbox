@@ -17,9 +17,9 @@
 #     was tried first and wasn't enough - the window kept painting opaque
 #     black instead of its actual content; picom's more complete backend is
 #     the standard choice for exactly this class of minimal-WM Wine setup.
-#   - GE-Proton (bundled below): runs Windows installers; plain Wine (also
-#     installed, as Proton's own base) is the fallback if INSTALL_PROTON_PATH
-#     is ever cleared
+#   - Proton (GE-Proton / Proton-CachyOS, downloaded at runtime, see below):
+#     runs Windows installers; plain Wine (also installed, as Proton's own
+#     base) is the fallback if no build is installed or configured
 #   - tesseract-ocr + xdotool: auto-clicker to drive "Next" dialogs (Phase 4)
 #
 # Build:  docker build -f docker/Dockerfile.install-sandbox -t romm-install-sandbox .
@@ -27,10 +27,9 @@
 # web app. Wire it via a separate compose service that shares Redis, the DB, and
 # the INSTALL_CACHE_PATH volume with the main app.
 
-ARG DEBIAN_VERSION=bookworm-slim
 ARG PYTHON_VERSION=3.13
 
-FROM python:${PYTHON_VERSION}-slim-bookworm AS sandbox-base
+FROM python:${PYTHON_VERSION}-slim-trixie AS sandbox-base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -92,51 +91,27 @@ RUN if [ -f /usr/share/novnc/vnc_lite.html ] && [ ! -f /usr/share/novnc/vnc.html
 # vnc.py), not $HOME/.icewm/preferences, so it applies regardless of $HOME.
 COPY ./docker/icewm-preferences /etc/icewm-preferences
 
-# GE-Proton (default) + Proton-CachyOS (selectable), side by side: used
-# instead of plain Wine to run the actual Windows installer - broader
-# DXVK/vkd3d/media-codec coverage, which some installers (and the games they
-# install) depend on. Two builds rather than one so an installer that
-# doesn't get along with one still has the other to try (see
-# handler/install/proton_builds.py's registry and the "Proton version"
-# picker it feeds).
+# Proton builds are no longer baked in at image-build time. Instead, the
+# default build (INSTALL_DEFAULT_PROTON_BUILD env, default "cachyos-latest")
+# is downloaded and extracted at runtime on the worker's first use — see
+# handler/install/runner.py:_ensure_proton_build and
+# handler/install/proton_builds.py:_download_proton_build. This keeps the
+# image small, avoids glibc-pinning issues (we can pick the right release at
+# runtime rather than at image build), and lets admins change the default
+# without rebuilding.
 #
-# GE-Proton is pinned to the 10.x line (bump the ARG deliberately, not
-# "latest"): starting with GE-Proton11-1, GloriousEggroll moved the build
-# environment to one that links against glibc 2.38+, which this image's
-# Debian bookworm base (glibc 2.36) can't satisfy - "wine: could not load
-# ntdll.so: ... version `GLIBC_2.38' not found". GE-Proton10-34 only needs
-# glibc 2.25; bumping past it needs either a newer base image or confirming
-# the target release's ntdll.so glibc requirement first.
-#
-# Proton-CachyOS is resolved to whatever its GitHub releases API currently
-# reports as "latest" at image build time (not pinned - bump by rebuilding
-# the image), picking the plain x86_64 asset over the _v3 one for broader
-# CPU compatibility. (Tried once already as an alternative to rule out a
-# Proton-build-specific cause for an installer-window-stays-blank rendering
-# bug - it reproduced identically, pointing at this sandbox's X11/compositor
-# setup instead, but confirmed it runs fine on this glibc 2.36 base. See
-# xcompmgr/picom below.)
-#
-# Placed before the COPY steps below so these large layers stay cached
-# across ordinary backend-source rebuilds.
-ARG GE_PROTON_VERSION=GE-Proton10-34
-RUN curl -fsSL \
-    "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/${GE_PROTON_VERSION}/${GE_PROTON_VERSION}.tar.gz" \
-    -o /tmp/proton-ge.tar.gz \
-    && mkdir -p /opt/proton-ge \
-    && tar -xzf /tmp/proton-ge.tar.gz -C /opt/proton-ge --strip-components=1 \
-    && rm /tmp/proton-ge.tar.gz \
-    && chmod -R a+rX /opt/proton-ge
-ENV INSTALL_PROTON_PATH=/opt/proton-ge/proton
+# The empty directory is pre-created and chowned so the unprivileged worker
+# can populate it with runtime-downloaded builds.
+RUN mkdir -p /opt/proton \
+    && chmod 755 /opt/proton
 
-RUN CACHYOS_ASSET_URL=$(curl -fsSL https://api.github.com/repos/CachyOS/proton-cachyos/releases/latest \
-        | grep -oP '"browser_download_url":\s*"\K[^"]*-x86_64\.tar\.xz(?=")') \
-    && curl -fsSL "$CACHYOS_ASSET_URL" -o /tmp/proton-cachyos.tar.xz \
-    && mkdir -p /opt/proton-cachyos \
-    && tar -xJf /tmp/proton-cachyos.tar.xz -C /opt/proton-cachyos --strip-components=1 \
-    && rm /tmp/proton-cachyos.tar.xz \
-    && chmod -R a+rX /opt/proton-cachyos
-ENV INSTALL_PROTON_CACHYOS_PATH=/opt/proton-cachyos/proton
+# Hand /opt/proton to the unprivileged romm-install user (set below) so it can
+# create subdirectories for runtime-downloaded Proton builds.
+RUN chown -R 10001:10001 /opt/proton
+
+# ProtonBuildManager scans this directory at runtime. ENV is set here (not just
+# in docker-compose) so the worker works standalone too.
+ENV PROTON_INSTALL_ROOT=/opt/proton
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.2 /uv /usr/local/bin/uv
 

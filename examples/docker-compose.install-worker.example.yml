@@ -77,15 +77,20 @@ services:
       - DB_NAME=romm # Must match the "romm" service's DB_NAME
       - DB_USER=romm-user # Must match the "romm" service's DB_USER
       - DB_PASSWD= # Must match the "romm" service's DB_PASSWD
-      - INSTALL_VNC_PORT_MIN=6900
-      - INSTALL_VNC_PORT_MAX=6999
-      # GE-Proton and Proton-CachyOS are both already bundled in the image at
-      # these paths (see docker/Dockerfile.install-sandbox) - GE-Proton used
-      # by default, CachyOS selectable via the "Proton version" picker.
-      # Override only to point at a different build, e.g. one mounted from
-      # the host.
-      # - INSTALL_PROTON_PATH=/opt/proton-ge/proton
-      # - INSTALL_PROTON_CACHYOS_PATH=/opt/proton-cachyos/proton
+       - INSTALL_VNC_PORT_MIN=6900
+       - INSTALL_VNC_PORT_MAX=6999
+       # Default Proton build for install sessions (auto-downloaded on first
+       # use if not present on disk). See PROTON_INSTALL_ROOT below for the
+       # download/extract root.
+       - INSTALL_DEFAULT_PROTON_BUILD=cachyos-latest
+       # ProtonBuildManager scans this directory (PROTON_INSTALL_ROOT) for
+       # installed Proton builds. Override only to relocate it or mount a
+       # volume for persistence across container rebuilds:
+       # - PROTON_INSTALL_ROOT=/romm/proton
+       # volumes:
+       #   - romm_proton:/romm/proton
+       # When using a persistent volume, uncomment the named volume above
+       # and add it here so downloaded builds survive container rebuilds.
     volumes:
       - /path/to/library:/romm/library:ro # Same library path as the "romm" service, read-only
       - romm_install_cache:/romm/cache/installs

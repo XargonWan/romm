@@ -11,6 +11,8 @@ services:
       - REDIS_HOST=romm-valkey-dev
       - DB_HOST=${DB_HOST:-romm-db-dev}
       - ROMM_BASE_PATH=/app/romm
+      - PROTON_INSTALL_ROOT=/opt/proton
+      - INSTALL_DEFAULT_PROTON_BUILD=cachyos-latest
     ports:
       - "3000:3000" # Vite dev server (custom)
       - "5173:5173" # Vite dev server (default)
@@ -84,6 +86,11 @@ services:
     # only full `privileged` let bwrap mount its sandboxed /proc. If your
     # host allows the lighter option, trade this for cap_add/security_opt.
     privileged: true
+    # Dev override: run as root so the entrypoint's chown of /opt/proton
+    # succeeds on unprivileged-userns hosts where Docker can't chown overlay
+    # layers at runtime as the non-root image user. Production builds use the
+    # Dockerfile's chown (as root during build); dev overrides here.
+    user: root
     environment:
       - REDIS_HOST=romm-valkey-dev
       - DB_HOST=${DB_HOST:-romm-db-dev}
@@ -91,10 +98,17 @@ services:
       - DB_USER=${DB_USER:-romm}
       - DB_PASSWD=${DB_PASSWD:-romm}
       - ROMM_BASE_PATH=/app/romm
+      - PROTON_INSTALL_ROOT=/opt/proton
+      - INSTALL_DEFAULT_PROTON_BUILD=cachyos-latest
     volumes:
       # Same mock library/cache the romm-dev service sees, so files an
       # install writes are visible on both sides without a second volume.
       - ./romm_mock:/app/romm
+      # Live-mount the entire backend so dev changes to install config,
+      # proton_builds.py, runner.py, etc. are reflected without rebuilding
+      # the image (the worker's venv lives at /src/.venv, separate from
+      # /src/backend, so this won't clobber dependencies).
+      - ./backend:/src/backend:ro
     depends_on:
       - romm-db-dev
       - romm-valkey-dev
