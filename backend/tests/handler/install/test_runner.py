@@ -18,28 +18,67 @@ class TestUsesWine:
 
 
 class TestWineOrProton:
-    def test_defaults_to_wine_when_unset(self, monkeypatch):
-        monkeypatch.setattr(runner, "INSTALL_PROTON_PATH", None)
+    def test_defaults_to_wine_when_no_builds_installed(self, monkeypatch):
+        monkeypatch.setattr(runner, "resolve_proton_path", lambda _: None)
+        monkeypatch.setattr(runner, "list_proton_builds", lambda: [])
         assert runner._wine_or_proton() == "wine"
 
-    def test_uses_the_configured_proton_path(self, monkeypatch):
-        monkeypatch.setattr(runner, "INSTALL_PROTON_PATH", "/opt/proton/proton")
-        assert runner._wine_or_proton() == "/opt/proton/proton"
+    def test_uses_resolved_proton_path(self, monkeypatch):
+        monkeypatch.setattr(
+            runner, "resolve_proton_path", lambda _: "/opt/proton/GE-Proton10-34/proton"
+        )
+        assert runner._wine_or_proton("GE-Proton10-34") == "/opt/proton/GE-Proton10-34/proton"
 
-    def test_unset_proton_build_falls_back_to_the_server_default(self, monkeypatch):
-        monkeypatch.setattr(runner, "INSTALL_PROTON_PATH", "/opt/proton/proton")
-        assert runner._wine_or_proton(None) == "/opt/proton/proton"
+    def test_unset_proton_build_falls_back_to_first_installed(self, monkeypatch):
+        from handler.install.proton_builds import ProtonBuild
 
-    def test_unknown_proton_build_falls_back_to_the_server_default(self, monkeypatch):
-        monkeypatch.setattr(runner, "INSTALL_PROTON_PATH", "/opt/proton/proton")
-        assert runner._wine_or_proton("not-a-real-build") == "/opt/proton/proton"
+        monkeypatch.setattr(runner, "resolve_proton_path", lambda _: None)
+        monkeypatch.setattr(
+            runner,
+            "list_proton_builds",
+            lambda: [
+                ProtonBuild(
+                    id="GE-Proton10-34",
+                    label="GE-Proton 10-34",
+                    installed=True,
+                    path="/opt/proton/GE-Proton10-34/proton",
+                ),
+                ProtonBuild(
+                    id="cachyos-latest",
+                    label="Proton-CachyOS",
+                    installed=True,
+                    path="/opt/proton/cachyos-latest/proton",
+                ),
+            ],
+        )
+        # With proton_build=None, falls back to the first installed build.
+        assert runner._wine_or_proton(None) == "/opt/proton/GE-Proton10-34/proton"
+
+    def test_unknown_proton_build_falls_back_to_first_installed(
+        self, monkeypatch
+    ):
+        from handler.install.proton_builds import ProtonBuild
+
+        monkeypatch.setattr(runner, "resolve_proton_path", lambda _: None)
+        monkeypatch.setattr(
+            runner,
+            "list_proton_builds",
+            lambda: [
+                ProtonBuild(
+                    id="GE-Proton10-34",
+                    label="GE-Proton 10-34",
+                    installed=True,
+                    path="/opt/proton/GE-Proton10-34/proton",
+                ),
+            ],
+        )
+        assert runner._wine_or_proton("not-a-real-build") == "/opt/proton/GE-Proton10-34/proton"
 
     def test_recognized_proton_build_resolves_via_the_registry(self, monkeypatch):
-        monkeypatch.setattr(runner, "INSTALL_PROTON_PATH", "/opt/proton/proton")
         monkeypatch.setattr(
-            runner, "resolve_proton_path", lambda build_id: "/opt/other/proton"
+            runner, "resolve_proton_path", lambda build_id: "/opt/proton/other/proton"
         )
-        assert runner._wine_or_proton("some-build") == "/opt/other/proton"
+        assert runner._wine_or_proton("some-build") == "/opt/proton/other/proton"
 
 
 class TestIsProton:
@@ -88,9 +127,10 @@ class TestBuildInnerCommand:
 
 
 class TestWrapForSandbox:
-    """bwrap only exposes what's explicitly bound in - every installed
-    Proton/Wine build's own directory needs to be read-only bound, not just
-    the server default, since a session can pick either one."""
+    """bwrap only exposes what's explicitly bound in. Now only the resolved
+    Proton build's own directory is bound (not all env-var paths), and only
+    if it actually exists — guarding against the bwrap crash when a stale
+    env var points at a non-existent path."""
 
     def _captured_ro_binds(self, monkeypatch) -> list[tuple[str, ...]]:
         captured: list[tuple[str, ...]] = []
@@ -101,11 +141,7 @@ class TestWrapForSandbox:
         )
         return captured
 
-    def test_binds_both_installed_builds(self, monkeypatch):
-        monkeypatch.setattr(runner, "INSTALL_PROTON_PATH", "/opt/proton-ge/proton")
-        monkeypatch.setattr(
-            runner, "INSTALL_PROTON_CACHYOS_PATH", "/opt/proton-cachyos/proton"
-        )
+    def test_binds_only_the_resolved_proton_builds_directory(self, monkeypatch):
         captured = self._captured_ro_binds(monkeypatch)
 
         runner._wrap_for_sandbox(
@@ -114,13 +150,13 @@ class TestWrapForSandbox:
             work_dir="/work",
             proton_prefix="/prefix",
             display=":50",
+            proton_or_wine="/opt/proton/GE-Proton10-34/proton",
         )
 
-        assert set(captured[0]) == {"/opt/proton-ge", "/opt/proton-cachyos"}
+        # Only the selected build's directory is bound, not all possible ones.
+        assert captured[0] == ("/opt/proton/GE-Proton10-34",)
 
-    def test_binds_only_the_one_thats_actually_set(self, monkeypatch):
-        monkeypatch.setattr(runner, "INSTALL_PROTON_PATH", "/opt/proton-ge/proton")
-        monkeypatch.setattr(runner, "INSTALL_PROTON_CACHYOS_PATH", None)
+    def test_binds_nothing_for_plain_wine(self, monkeypatch):
         captured = self._captured_ro_binds(monkeypatch)
 
         runner._wrap_for_sandbox(
@@ -129,13 +165,16 @@ class TestWrapForSandbox:
             work_dir="/work",
             proton_prefix="/prefix",
             display=":50",
+            proton_or_wine="wine",
         )
 
-        assert captured[0] == ("/opt/proton-ge",)
+        # Plain Wine lives under /usr which is already ro-bound by the
+        # sandbox spec; no extra ro_bind is needed.
+        assert captured[0] == ()
 
-    def test_binds_nothing_when_neither_is_set(self, monkeypatch):
-        monkeypatch.setattr(runner, "INSTALL_PROTON_PATH", None)
-        monkeypatch.setattr(runner, "INSTALL_PROTON_CACHYOS_PATH", None)
+    def test_binds_nothing_when_proton_path_doesnt_exist(self, monkeypatch):
+        # The crash fix: a stale/non-existent path must not attempt a bwrap
+        # bind (which fails with "Can't find source path"), just skip it.
         captured = self._captured_ro_binds(monkeypatch)
 
         runner._wrap_for_sandbox(
@@ -144,8 +183,9 @@ class TestWrapForSandbox:
             work_dir="/work",
             proton_prefix="/prefix",
             display=":50",
+            proton_or_wine="/opt/proton/GE-Proton10-34/proton",
         )
-
+        # Path doesn't exist on the test machine, so no ro_bind is set.
         assert captured[0] == ()
 
     def test_sandbox_disabled_skips_bwrap_entirely(self, monkeypatch):
@@ -156,6 +196,7 @@ class TestWrapForSandbox:
             work_dir="/work",
             proton_prefix="/prefix",
             display=":50",
+            proton_or_wine="wine",
         )
         assert result == ["true"]
 

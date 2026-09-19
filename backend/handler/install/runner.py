@@ -25,8 +25,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from config import (
-    INSTALL_PROTON_CACHYOS_PATH,
-    INSTALL_PROTON_PATH,
+    INSTALL_DEFAULT_PROTON_BUILD,
     INSTALL_SANDBOX_ENABLED,
     INSTALL_TIMEOUT,
 )
@@ -43,7 +42,11 @@ from handler.install.manifest import (
     write_manifest,
 )
 from handler.install.progress import ThrottledProgress
-from handler.install.proton_builds import resolve_proton_path
+from handler.install.proton_builds import (
+    _download_proton_build,
+    list_proton_builds,
+    resolve_proton_path,
+)
 from handler.install.sandbox import SandboxSpec, build_bwrap_command
 from handler.install.vnc import VncSession, start_vnc_session
 from handler.install.windows_output import (
@@ -98,16 +101,64 @@ def _uses_wine(installer_abs_path: str) -> bool:
     return not installer_abs_path.lower().endswith((".sh", ".run"))
 
 
+def _ensure_proton_build(build_id: str) -> None:
+    """Download and extract a Proton build synchronously if not yet installed.
+
+    Called from within ``run_install`` — which itself runs as an RQ job on the
+    install queue. Because the worker is single-threaded for that queue, we
+    cannot enqueue a *second* RQ job (it would wait behind the current one
+    forever). Instead, we call ``_download_proton_build`` directly: it streams
+    the tarball, extracts it into ``PROTON_INSTALL_ROOT/<build_id>/``, and
+    registers the build so subsequent scans see it instantly.
+    """
+    if resolve_proton_path(build_id) is not None:
+        return
+    _download_proton_build(build_id)
+
+
 def _wine_or_proton(proton_build: str | None = None) -> str:
     """The Proton/Wine binary this install runs Windows installers under.
 
     ``proton_build`` is the session's chosen build id (see
     handler.install.proton_builds); an unset, unknown, or not-actually-
-    installed id falls back to the server default (INSTALL_PROTON_PATH),
-    same as if no choice had been made at all. The sandbox image bundles
-    GE-Proton by default; INSTALL_PROTON_PATH can point at a different
-    build, or be cleared to fall back to plain Wine."""
-    return resolve_proton_path(proton_build) or INSTALL_PROTON_PATH or "wine"
+    installed id falls back to whichever build the manager discovers first
+    (typically the first directory under PROTON_INSTALL_ROOT), or plain Wine
+    if none are on disk. If no explicit build is requested, the global
+    default from INSTALL_DEFAULT_PROTON_BUILD is consulted first and
+    auto-downloaded on the worker's first use if missing (no pre-baking).
+    """
+    # Explicit session-level choice: use it if installed, else auto-download.
+    if proton_build is not None:
+        resolved = resolve_proton_path(proton_build)
+        if resolved:
+            return resolved
+        try:
+            _ensure_proton_build(proton_build)
+            return resolve_proton_path(proton_build) or "wine"
+        except TimeoutError:
+            log.warning(f"Auto-download of Proton {proton_build} timed out, falling back")
+
+    # Global default from settings (library-management / stream-install config).
+    if INSTALL_DEFAULT_PROTON_BUILD:
+        path = resolve_proton_path(INSTALL_DEFAULT_PROTON_BUILD)
+        if path:
+            return path
+        try:
+            _ensure_proton_build(INSTALL_DEFAULT_PROTON_BUILD)
+            path = resolve_proton_path(INSTALL_DEFAULT_PROTON_BUILD)
+            if path:
+                return path
+        except TimeoutError:
+            log.warning(
+                f"Auto-download of default Proton '{INSTALL_DEFAULT_PROTON_BUILD}' "
+                f"timed out, falling back"
+            )
+
+    # Fallback: first installed build discovered on disk.
+    for build in list_proton_builds():
+        if build.installed and build.path:
+            return build.path
+    return "wine"
 
 
 def _is_proton(proton_or_wine: str) -> bool:
@@ -189,6 +240,7 @@ def _init_wine_prefix(
         work_dir=work_dir,
         proton_prefix=prefix_dir,
         display=display,
+        proton_or_wine=proton_or_wine,
         extra_env=extra_env,
     )
     last_error: Exception | None = None
@@ -264,6 +316,22 @@ def run_install(install_session_id: int) -> None:
         extract_temp_dir, extract_root, top_candidate = result
         installer_abs = str(extract_root / top_candidate.path)
 
+    # InstallShield-based multi-part installers (their ISArcExtract/ISDone.dll
+    # archive extractor) look for sibling data files (setup-N.bin, Data1.cab,
+    # ...) next to the installer .exe at runtime, not just the .exe itself -
+    # without this, bwrap only exposes the single chosen file and the
+    # installer fails with "It is not found any file specified for
+    # ISArcExtract" the instant it needs a sibling it can't see. Bind the
+    # installer's actual containing root read-only: the ROM's own library
+    # directory normally, or the archive's scratch extraction root when the
+    # installer came from inside an archive/ISO (see archive_prescan above).
+    if extract_temp_dir is not None:
+        installer_search_root = extract_root
+    else:
+        installer_search_root = fs_rom_handler.get_rom_root_abs_path(rom)
+        if not installer_search_root.is_dir():
+            installer_search_root = installer_search_root.parent
+
     work_dir = ensure_session_cache_dir(install_session_id)
     prefix_dir = _proton_prefix_dir(work_dir)
     proton_or_wine = _wine_or_proton(session.proton_build)
@@ -321,7 +389,9 @@ def run_install(install_session_id: int) -> None:
             work_dir=str(work_dir),
             proton_prefix=str(prefix_dir),
             display=vnc.display,
+            proton_or_wine=proton_or_wine,
             extra_env=extra_env,
+            installer_search_root=str(installer_search_root),
         )
 
         log.info(
@@ -483,22 +553,33 @@ def _wrap_for_sandbox(
     work_dir: str,
     proton_prefix: str,
     display: str,
+    proton_or_wine: str,
     extra_env: tuple[tuple[str, str], ...] = (),
+    installer_search_root: str | None = None,
 ) -> list[str]:
     """Wrap the inner command in bubblewrap unless the sandbox is disabled."""
     if not INSTALL_SANDBOX_ENABLED:
         log.warning("Install sandbox is DISABLED; running installer unconfined")
         return inner
-    # Bind in every installed Proton/Wine build's own directory, not just the
-    # server default - a session can pick either one (see proton_builds.py),
-    # and bwrap only exposes what's explicitly listed here.
-    ro_binds = tuple(
-        {
-            str(Path(path).resolve().parent)
-            for path in (INSTALL_PROTON_PATH, INSTALL_PROTON_CACHYOS_PATH)
-            if path
-        }
-    )
+    # Bind in ONLY the build this session actually resolved to — not every
+    # possible build directory. bwrap's --ro-bind fails outright if the source
+    # path doesn't exist ("Can't find source path"), which was the root cause
+    # of the crash when a stale env var pointed at a non-existent /opt/proton.
+    # Guard with .exists() so a missing/stale path never takes down the run.
+    # Plain Wine ("wine") lives under /usr already covered by the ro-bind, so
+    # no extra bind is needed for it.
+    ro_binds: tuple[str, ...] = ()
+    if _is_proton(proton_or_wine):
+        proton_path = Path(proton_or_wine)
+        if proton_path.exists():
+            ro_binds = (str(proton_path.resolve().parent),)
+    # Multi-part installers need their sibling data files visible too, not
+    # just the one .exe SandboxSpec always binds on its own - see run_install's
+    # own comment on installer_search_root for why. Guarded the same way as
+    # the Proton path above, for the same reason (never take down a run over
+    # a path that turned out not to exist).
+    if installer_search_root is not None and Path(installer_search_root).exists():
+        ro_binds += (installer_search_root,)
     spec = SandboxSpec(
         installer_path=installer_abs,
         work_dir=work_dir,
