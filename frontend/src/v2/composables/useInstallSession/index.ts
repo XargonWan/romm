@@ -29,6 +29,17 @@ import type { SimpleRom } from "@/stores/roms";
 import { useConfirm } from "@/v2/composables/useConfirm";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
 
+// Extended ProtonBuild shape with runtime-discovered fields that haven't made
+// it into the generated @/__generated__ types yet (version, source, size, etc.).
+// Casts from the raw API response — the backend returns these fields, the
+// generated types just haven't been regenerated.
+export type ProtonBuildExtended = ProtonBuildSchema & {
+  version?: string | null;
+  path?: string | null;
+  source?: string;
+  size_bytes?: number | null;
+};
+
 // A candidate at this rank was matched by a well-known installer file name
 // (gog-*.exe, setup.exe, ...) — confident enough to start without asking.
 // Kept in sync with RANK_KNOWN_INSTALLER in
@@ -60,6 +71,52 @@ function errorDetail(err: unknown): string {
   );
 }
 
+// A freshly (re)started install-sandbox worker takes real, bounded time to
+// come up - Wine/Proton warmup then Redis registration (see
+// docker/init_scripts/install-sandbox-entrypoint.sh) - before it's visible to
+// has_install_worker(). Visiting /install (or clicking "Install") right as
+// the stack comes up used to hard-fail on that transient window (503 "No
+// install worker is currently connected…") instead of riding it out. ~50s
+// total, loosely matching the worker's own up-to-90s prefix-warmup budget.
+const WORKER_STARTUP_RETRY_DELAYS_MS = [
+  2000, 3000, 5000, 5000, 5000, 10000, 10000, 10000,
+];
+
+function isWorkerUnavailable(err: unknown): boolean {
+  return (err as { response?: { status?: number } })?.response?.status === 503;
+}
+
+/** Retry `fn` while it fails specifically with "worker not connected yet",
+ *  waiting between attempts; any other error (or exhausting the retry
+ *  budget) rethrows immediately. `onWaiting` toggles around each wait so
+ *  the caller can show a distinct "starting up…" state instead of a bare
+ *  spinner. `shouldStop` is checked before every retry so an unmounted
+ *  caller doesn't keep scheduling timers (same idiom as the poll loops
+ *  below). */
+async function withWorkerStartupRetry<T>(
+  fn: () => Promise<T>,
+  {
+    onWaiting,
+    shouldStop,
+  }: { onWaiting?: (w: boolean) => void; shouldStop?: () => boolean } = {},
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const result = await fn();
+      onWaiting?.(false);
+      return result;
+    } catch (err) {
+      const delay = WORKER_STARTUP_RETRY_DELAYS_MS[attempt];
+      if (!isWorkerUnavailable(err) || delay === undefined || shouldStop?.()) {
+        onWaiting?.(false);
+        throw err;
+      }
+      onWaiting?.(true);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
 export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
   const { t } = useI18n();
   const snackbar = useSnackbar();
@@ -68,16 +125,19 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
 
   const session = ref<InstallSessionSchema | null>(null);
   const candidates = ref<InstallCandidateSchema[]>([]);
-  const protonBuilds = ref<ProtonBuildSchema[]>([]);
+  const protonBuilds = ref<ProtonBuildExtended[]>([]);
   const streamCopy = ref(false);
   const checking = ref(false);
   const starting = ref(false);
   const cancelling = ref(false);
+  // Track in-progress Proton builds by id for live progress display.
+  const downloadingBuilds = ref<Record<string, number>>({});
   // Whether an install-sandbox worker is connected right now - there's no
   // static setting, this is the sole signal for offering "Install" at all.
   // `null` = not checked yet (assume no, matches the fail-closed default).
   const workerAvailable = ref<boolean | null>(null);
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let downloadPollTimer: ReturnType<typeof setTimeout> | null = null;
   // schedulePoll() runs inside an async `finally`, so a plain "clear
   // whatever timer id we're tracking" on unmount can miss a call that's
   // already in flight - it resolves anyway and reschedules regardless.
@@ -102,6 +162,21 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
   );
   const hasCache = computed(() => !!session.value && !isRunning.value);
 
+  // While the worker is bootstrapping (downloading/installing the Proton
+  // build before the VNC bridge comes up), poll its download progress so the
+  // Install page can show "Downloading Proton X… xx%" instead of a bare
+  // spinner with no context.
+  const protonDownloadProgress = ref<number | null>(null);
+  const protonDownloadLabel = ref<string | null>(null);
+  // Whether the build is in the extraction phase (download complete, tarball
+  // being unpacked). The frontend shows "Installing Proton…" in this state.
+  const protonExtracting = ref(false);
+  // True while startWithPath is retrying through a transient "worker not
+  // connected yet" 503 (see withWorkerStartupRetry) - lets the Install page
+  // show "waiting for the install worker to start…" instead of a bare
+  // spinner during that window.
+  const waitingForWorker = ref(false);
+
   function stopPolling() {
     if (pollTimer !== null) {
       clearTimeout(pollTimer);
@@ -121,6 +196,21 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     try {
       const { data } = await installApi.getInstallSession(rom.id);
       session.value = data;
+
+      // While the worker is bootstrapping (state=installing, no VNC URL yet),
+      // the Proton build it picked may still be downloading. Poll the
+      // download-progress endpoint so the UI can show a percentage instead of
+      // a bare spinner. Once the VNC bridge is up, stop polling.
+      if (
+        data.state === "installing" &&
+        data.vnc_url === null &&
+        data.proton_build
+      ) {
+        pollProtonDownload(data.proton_build);
+      } else {
+        protonDownloadProgress.value = null;
+        protonDownloadLabel.value = null;
+      }
     } catch (err) {
       // Only a real 404 means "no session for this rom/user" - anything
       // else (a dropped connection, a 5xx, the backend mid-restart) is
@@ -175,11 +265,18 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     if (!rom) return;
     starting.value = true;
     try {
-      const { data } = await installApi.startInstall({
-        romId: rom.id,
-        installerPath,
-        protonBuild,
-      });
+      const { data } = await withWorkerStartupRetry(
+        () =>
+          installApi.startInstall({
+            romId: rom.id,
+            installerPath,
+            protonBuild,
+          }),
+        {
+          onWaiting: (w) => (waitingForWorker.value = w),
+          shouldStop: () => stopped,
+        },
+      );
       session.value = data;
       if (ACTIVE_STATES.includes(data.state)) schedulePoll();
     } catch (err) {
@@ -212,9 +309,87 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     if (!canInstall.value) return;
     try {
       const { data } = await installApi.getProtonBuilds();
-      protonBuilds.value = data.builds;
+      protonBuilds.value = data.builds as ProtonBuildExtended[];
     } catch {
       protonBuilds.value = [];
+    }
+  }
+
+  /** Enqueue a Proton build download on the install worker, then start polling
+   *  for progress. Re-fetches the build list when done so newly-installed
+   *  builds appear in the picker. */
+  async function downloadProtonBuild(buildId: string) {
+    downloadingBuilds.value[buildId] = 0;
+    try {
+      await installApi.downloadProtonBuild(buildId);
+      scheduleDownloadPoll(buildId);
+    } catch (err) {
+      const detail = errorDetail(err);
+      snackbar.error(
+        t("rom.install-snackbar-proton-download-failed", {
+          name: buildId,
+          detail,
+        }),
+        { icon: "mdi-alert-circle-outline" },
+      );
+      delete downloadingBuilds.value[buildId];
+    }
+  }
+
+  const DOWNLOAD_POLL_INTERVAL_MS = 2000;
+
+  function scheduleDownloadPoll(buildId: string) {
+    if (downloadPollTimer !== null) clearTimeout(downloadPollTimer);
+    if (stopped) return;
+    downloadPollTimer = setTimeout(
+      () => pollDownloadProgress(buildId),
+      DOWNLOAD_POLL_INTERVAL_MS,
+    );
+  }
+
+  async function pollDownloadProgress(buildId: string) {
+    try {
+      const { data } = await installApi.getProtonDownloadProgress(buildId);
+      if (data.progress === null) {
+        // Download finished or not running — refresh the build list so the
+        // newly-installed build appears in the picker.
+        downloadPollTimer = null;
+        await fetchProtonBuilds();
+        delete downloadingBuilds.value[buildId];
+      } else {
+        downloadingBuilds.value[buildId] = data.progress;
+        scheduleDownloadPoll(buildId);
+      }
+    } catch {
+      downloadPollTimer = null;
+      delete downloadingBuilds.value[buildId];
+    }
+  }
+
+  async function pollProtonDownload(buildId: string) {
+    if (!canInstall.value) return;
+    try {
+      const { data } = await installApi.getProtonDownloadProgress(buildId);
+      // Resolve a display label for the build.
+      const build = protonBuilds.value.find((b) => b.id === buildId);
+      protonDownloadLabel.value = build?.label ?? buildId;
+
+      if (data.extracting) {
+        // Tarball downloaded, extraction in progress — show "Installing…".
+        protonExtracting.value = true;
+        protonDownloadProgress.value = null;
+      } else if (data.progress === null) {
+        // Download complete and not extracting — build is ready.
+        protonExtracting.value = false;
+        protonDownloadProgress.value = null;
+        fetchProtonBuilds();
+      } else {
+        protonExtracting.value = false;
+        protonDownloadProgress.value = data.progress;
+      }
+    } catch {
+      // Worker might not have started the download yet — leave the last
+      // known state and try again on the next session poll.
     }
   }
 
@@ -254,6 +429,7 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
   onBeforeUnmount(() => {
     stopped = true;
     stopPolling();
+    if (downloadPollTimer !== null) clearTimeout(downloadPollTimer);
   });
 
   return {
@@ -262,6 +438,7 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     session,
     candidates,
     protonBuilds,
+    downloadingBuilds,
     streamCopy,
     checking,
     starting,
@@ -271,10 +448,15 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     isActive,
     vncUrl,
     hasCache,
+    protonDownloadProgress,
+    protonDownloadLabel,
+    protonExtracting,
+    waitingForWorker,
     checkExisting,
     checkWorkerAvailable,
     checkCandidates,
     fetchProtonBuilds,
+    downloadProtonBuild,
     startWithPath,
     cancelInstall,
   };
@@ -300,15 +482,23 @@ export async function startInstallAndNavigate(
 ): Promise<void> {
   void router.push({ name: ROUTES.INSTALL, params: { rom: rom.id } });
   try {
-    const { data } = await installApi.getInstallCandidates(rom.id);
-    if (data.stream_copy) {
-      await installApi.startInstall({ romId: rom.id });
-      return;
-    }
-    const top = data.candidates[0];
-    if (top && top.rank === RANK_KNOWN_INSTALLER) {
-      await installApi.startInstall({ romId: rom.id, installerPath: top.path });
-    }
+    // Retried as one unit (not just the final startInstall call): a worker
+    // that's still booting 503s on the candidates fetch just as readily -
+    // see withWorkerStartupRetry's own comment.
+    await withWorkerStartupRetry(async () => {
+      const { data } = await installApi.getInstallCandidates(rom.id);
+      if (data.stream_copy) {
+        await installApi.startInstall({ romId: rom.id });
+        return;
+      }
+      const top = data.candidates[0];
+      if (top && top.rank === RANK_KNOWN_INSTALLER) {
+        await installApi.startInstall({
+          romId: rom.id,
+          installerPath: top.path,
+        });
+      }
+    });
   } catch {
     // Best-effort: the Install page's own checkExisting()/checkCandidates()
     // still give the user a way to see what happened and retry.

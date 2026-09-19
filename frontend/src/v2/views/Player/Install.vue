@@ -25,6 +25,7 @@ import { useRoute, useRouter } from "vue-router";
 import { ROUTES } from "@/plugins/router";
 import installApi from "@/services/api/install";
 import romApi from "@/services/api/rom";
+import storeConfig from "@/stores/config";
 import type { DetailedRom } from "@/stores/roms";
 import { formatBytes } from "@/utils";
 import GameCover from "@/v2/components/shared/GameCover.vue";
@@ -37,6 +38,7 @@ const router = useRouter();
 
 const rom = ref<DetailedRom | null>(null);
 const install = useInstallSession(() => rom.value);
+const configStore = storeConfig();
 
 const selectedInstallerPath = ref<string | null>(null);
 const selectedProtonBuild = ref<string | null>(null);
@@ -144,7 +146,15 @@ watch(install.candidates, (list) => {
 });
 watch(install.protonBuilds, (list) => {
   if (selectedProtonBuild.value == null) {
-    selectedProtonBuild.value = list.find((b) => b.installed)?.id ?? null;
+    const defaultBuild = configStore.config.INSTALL_DEFAULT_PROTON_BUILD;
+    const installedIds = new Set(
+      list.filter((b) => b.installed).map((b) => b.id),
+    );
+    if (defaultBuild && installedIds.has(defaultBuild)) {
+      selectedProtonBuild.value = defaultBuild;
+    } else {
+      selectedProtonBuild.value = list.find((b) => b.installed)?.id ?? null;
+    }
   }
 });
 
@@ -161,6 +171,19 @@ const protonItems = computed(() =>
     disabled: !build.installed,
   })),
 );
+
+// Whether any not-yet-installed build is listed (shows the download button).
+const downloadableBuilds = computed(() =>
+  install.protonBuilds.value.filter((b) => !b.installed),
+);
+
+function downloadSelectedProton() {
+  // Queue downloads for every not-yet-installed build the server lists.
+  // Each runs as an independent RQ job on the install worker.
+  for (const build of downloadableBuilds.value) {
+    install.downloadProtonBuild(build.id);
+  }
+}
 
 function startInstall() {
   install.startWithPath(
@@ -183,6 +206,26 @@ function onMainButtonClick() {
 // sync there rather than shared, since each reads a slightly different
 // prop shape off the same composable.
 const pendingLabel = computed(() => {
+  if (install.waitingForWorker.value) {
+    return t("rom.install-waiting-for-worker");
+  }
+  if (install.state.value === "installing") {
+    if (install.protonDownloadProgress.value !== null) {
+      const pct = Math.round((install.protonDownloadProgress.value || 0) * 100);
+      return t("rom.install-downloading-proton", {
+        name: install.protonDownloadLabel.value ?? "unknown",
+        pct,
+      });
+    }
+    if (install.protonExtracting.value) {
+      return t("rom.install-extracting-proton", {
+        name: install.protonDownloadLabel.value ?? "unknown",
+      });
+    }
+    if (!install.vncUrl.value) {
+      return t("rom.install-starting");
+    }
+  }
   switch (install.state.value) {
     case "streaming":
       return t("rom.install-copying");
@@ -249,10 +292,26 @@ const downloadSpeedLimitLabel = computed(() =>
         />
       </div>
 
-      <!-- Session active but the sandbox hasn't reached the VNC bridge yet. -->
-      <div v-else-if="install.isActive.value" class="r-v2-install__pending">
+      <!-- Session active but the sandbox hasn't reached the VNC bridge yet,
+           or no session exists yet because the worker is still booting and
+           the start request is being retried (see waitingForWorker). -->
+      <div
+        v-else-if="install.isActive.value || install.waitingForWorker.value"
+        class="r-v2-install__pending"
+      >
         <div class="r-v2-install__spinner" aria-hidden="true" />
         <p>{{ pendingLabel }}</p>
+        <div
+          v-if="install.protonDownloadProgress.value !== null"
+          class="r-v2-install__dl-progress"
+        >
+          <div
+            class="r-v2-install__dl-bar"
+            :style="{
+              width: `${(install.protonDownloadProgress.value || 0) * 100}%`,
+            }"
+          />
+        </div>
       </div>
 
       <!-- Idle (nothing requested yet) or terminal (done/failed/expired). -->
@@ -337,15 +396,20 @@ const downloadSpeedLimitLabel = computed(() =>
           :items="protonItems"
         />
 
+        <!-- Download affordance for installable (not-yet-installed) Proton
+             builds. Replaces the previous always-disabled placeholder button. -->
         <RBtn
+          v-if="downloadableBuilds.length > 0"
           block
           variant="outlined"
           size="small"
-          disabled
+          :loading="Object.keys(install.downloadingBuilds.value).length > 0"
+          :disabled="install.isActive.value || install.starting.value"
           prepend-icon="mdi-download-outline"
           class="r-v2-install__proton-download"
+          @click="downloadSelectedProton"
         >
-          {{ t("rom.install-download-proton-disabled-hint") }}
+          {{ t("rom.install-download-other-proton") }}
         </RBtn>
       </div>
       <div class="r-v2-install__sidebar-foot">
@@ -436,6 +500,19 @@ const downloadSpeedLimitLabel = computed(() =>
   padding: 32px;
   text-align: center;
   color: var(--r-color-fg-secondary);
+}
+.r-v2-install__dl-progress {
+  width: 220px;
+  height: 6px;
+  background: var(--r-color-bg-elevated);
+  border: 1px solid var(--r-color-border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.r-v2-install__dl-bar {
+  height: 100%;
+  background: var(--r-color-primary);
+  transition: width 0.3s ease;
 }
 .r-v2-install__cover {
   width: 100%;

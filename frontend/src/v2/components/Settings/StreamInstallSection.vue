@@ -1,15 +1,10 @@
 <script setup lang="ts">
-// StreamInstallSection — the "Stream Install" tab in Library Management.
-// One setting today: the global download-speed cap shared by every
-// concurrent stream-install transfer (see handler.install.bandwidth on the
-// backend) - not per-game, a single server-wide value, like a torrent
-// client's global rate limit. Entered here in KB/s (friendlier than typing
-// a raw bytes/sec number) and converted on save/load.
-import { RBtn, RTextField } from "@v2/lib";
+import { RBtn, RProgressCircular, RSelect, RTextField } from "@v2/lib";
 import { storeToRefs } from "pinia";
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import configApi from "@/services/api/config";
+import installApi from "@/services/api/install";
 import storeAuth from "@/stores/auth";
 import type { Config } from "@/stores/config";
 import storeConfig from "@/stores/config";
@@ -32,11 +27,27 @@ function configToKbPerSec(cfg: Config): number | null {
 const kbPerSec = ref<number | null>(configToKbPerSec(config.value));
 const savedSnapshot = ref(kbPerSec.value);
 
-const dirty = computed(() => kbPerSec.value !== savedSnapshot.value);
+const protonBuilds = ref<Array<{ id: string; label: string; installed: boolean; version?: string | null }>>([]);
+const selectedProtonBuild = ref<string | null>(
+  config.value.INSTALL_DEFAULT_PROTON_BUILD,
+);
+const savedProtonBuild = ref<string | null>(selectedProtonBuild.value);
+const downloadingBuilds = ref<Record<string, number>>({});
+const loadingBuilds = ref(false);
+
+const dirty = computed(() => {
+  if (kbPerSec.value !== savedSnapshot.value) return true;
+  if (selectedProtonBuild.value !== savedProtonBuild.value) return true;
+  return false;
+});
+
 const canEdit = computed(
   () =>
     authStore.scopes.includes("platforms.write") &&
     config.value.CONFIG_FILE_WRITABLE,
+);
+const canDownload = computed(
+  () => authStore.scopes.includes("roms.install"),
 );
 
 const loading = ref(true);
@@ -48,6 +59,8 @@ async function loadConfig() {
     const cfg = await configStore.fetchConfig({ rethrow: true });
     kbPerSec.value = configToKbPerSec(cfg);
     savedSnapshot.value = kbPerSec.value;
+    selectedProtonBuild.value = cfg.INSTALL_DEFAULT_PROTON_BUILD ?? null;
+    savedProtonBuild.value = selectedProtonBuild.value;
   } catch {
     // Best-effort: the section still renders with whatever the store
     // already had (e.g. from a previous successful load).
@@ -56,10 +69,26 @@ async function loadConfig() {
   }
 }
 
-onMounted(loadConfig);
+async function loadProtonBuilds() {
+  loadingBuilds.value = true;
+  try {
+    const { data } = await installApi.getProtonBuilds();
+    protonBuilds.value = data.builds;
+  } catch {
+    protonBuilds.value = [];
+  } finally {
+    loadingBuilds.value = false;
+  }
+}
+
+onMounted(() => {
+  loadConfig();
+  loadProtonBuilds();
+});
 
 function onReset() {
   kbPerSec.value = savedSnapshot.value;
+  selectedProtonBuild.value = savedProtonBuild.value;
 }
 
 async function onSave() {
@@ -71,8 +100,10 @@ async function onSave() {
         : null;
     await configApi.updateInstallSettings({
       download_speed_limit_bytes_per_sec: bytesPerSec,
+      default_proton_build: selectedProtonBuild.value,
     });
     savedSnapshot.value = kbPerSec.value;
+    savedProtonBuild.value = selectedProtonBuild.value;
     await configStore.fetchConfig();
     snackbar.success(t("settings.stream-install-saved"));
   } catch (err) {
@@ -87,6 +118,66 @@ async function onSave() {
     saving.value = false;
   }
 }
+
+let downloadPollTimer: ReturnType<typeof setTimeout> | null = null;
+let stopped = false;
+
+async function startDownload(buildId: string) {
+  downloadingBuilds.value[buildId] = 0;
+  try {
+    await installApi.downloadProtonBuild(buildId);
+    scheduleDownloadPoll(buildId);
+  } catch (err) {
+    const e = err as {
+      response?: { data?: { detail?: string }; statusText?: string };
+      message?: string;
+    };
+    const detail =
+      e?.response?.data?.detail || e?.response?.statusText || e?.message;
+    snackbar.error(t("install.proton-download-failed", { name: buildId, detail }));
+    delete downloadingBuilds.value[buildId];
+  }
+}
+
+const DOWNLOAD_POLL_INTERVAL_MS = 2000;
+
+function scheduleDownloadPoll(buildId: string) {
+  if (downloadPollTimer !== null) clearTimeout(downloadPollTimer);
+  if (stopped) return;
+  downloadPollTimer = setTimeout(() => pollDownloadProgress(buildId), DOWNLOAD_POLL_INTERVAL_MS);
+}
+
+async function pollDownloadProgress(buildId: string) {
+  try {
+    const { data } = await installApi.getProtonDownloadProgress(buildId);
+    if (data.extracting) {
+      downloadingBuilds.value[buildId] = -1; // indeterminate spinner
+      scheduleDownloadPoll(buildId);
+    } else if (data.progress === null) {
+      downloadPollTimer = null;
+      await loadProtonBuilds();
+      delete downloadingBuilds.value[buildId];
+      snackbar.success(t("install.proton-download-complete", { name: buildId }));
+    } else {
+      downloadingBuilds.value[buildId] = data.progress;
+      scheduleDownloadPoll(buildId);
+    }
+  } catch {
+    downloadPollTimer = null;
+    delete downloadingBuilds.value[buildId];
+  }
+}
+
+onBeforeUnmount(() => {
+  stopped = true;
+  if (downloadPollTimer !== null) clearTimeout(downloadPollTimer);
+});
+
+const allBuilds = computed(() => protonBuilds.value);
+
+const downloadableBuilds = computed(() =>
+  protonBuilds.value.filter((b) => !b.installed),
+);
 </script>
 
 <template>
@@ -112,6 +203,80 @@ async function onSave() {
           <span class="r-v2-stream-install__unit">KB/s</span>
         </template>
       </RTextField>
+    </SettingsSection>
+
+    <SettingsSection
+      :title="t('settings.stream-install-proton-title')"
+      icon="mdi-water-check"
+    >
+      <p class="r-v2-stream-install__desc">
+        {{ t("settings.stream-install-proton-desc") }}
+      </p>
+
+      <RSelect
+        v-model="selectedProtonBuild"
+        :items="allBuilds"
+        :label="t('settings.stream-install-proton-field')"
+        :disabled="!canEdit || loading"
+        :loading="loadingBuilds"
+        item-title="label"
+        item-value="id"
+      />
+
+      <div v-if="protonBuilds.length === 0 && !loadingBuilds" class="r-v2-stream-install__no-builds">
+        <p class="r-v2-stream-install__desc">
+          {{ t("install.proton-no-installs") }}
+        </p>
+      </div>
+
+      <div class="r-v2-stream-install__builds-divider">
+        <RDivider inset />
+        <span class="r-v2-stream-install__builds-divider-text">
+          {{ t("install.proton-available-downloads") }}
+        </span>
+        <RDivider inset />
+      </div>
+
+      <div
+        v-for="build in downloadableBuilds"
+        :key="build.id"
+        class="r-v2-stream-install__build-row"
+      >
+        <div class="r-v2-stream-install__build-info">
+          <span class="r-v2-stream-install__build-label">{{ build.label }}</span>
+          <span class="r-v2-stream-install__build-badge">
+            {{ t("install.proton-downloadable") }}
+          </span>
+        </div>
+
+        <div v-if="downloadingBuilds[build.id] !== undefined" class="r-v2-stream-install__build-progress">
+          <RProgressCircular
+            :value="downloadingBuilds[build.id]"
+            :indeterminate="downloadingBuilds[build.id] <= 0"
+            size="small"
+            color="primary"
+          />
+          <span class="r-v2-stream-install__build-progress-text">
+            {{ Math.round((downloadingBuilds[build.id] || 0) * 100) }}%
+          </span>
+        </div>
+
+        <RBtn
+          v-else
+          variant="flat"
+          color="primary"
+          size="small"
+          :loading="false"
+          :disabled="!canEdit || !canDownload"
+          @click="startDownload(build.id)"
+        >
+          {{ t("install.proton-download-btn") }}
+        </RBtn>
+      </div>
+
+      <div v-if="loadingBuilds" class="r-v2-stream-install__builds-loading">
+        <RProgressCircular indeterminate size="small" color="primary" />
+      </div>
     </SettingsSection>
 
     <Transition name="r-v2-stream-install__bar">
@@ -188,5 +353,62 @@ async function onSave() {
 .r-v2-stream-install__bar-leave-to {
   opacity: 0;
   transform: translateY(8px);
+}
+
+.r-v2-stream-install__no-builds {
+  margin: 8px 0;
+}
+.r-v2-stream-install__builds-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 8px;
+  color: var(--r-color-fg-secondary);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.r-v2-stream-install__builds-divider-text {
+  white-space: nowrap;
+}
+.r-v2-stream-install__build-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--r-color-border);
+}
+.r-v2-stream-install__build-row:last-child {
+  border-bottom: none;
+}
+.r-v2-stream-install__build-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.r-v2-stream-install__build-label {
+  font-size: 13px;
+  color: var(--r-color-fg-primary);
+}
+.r-v2-stream-install__build-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--r-color-surface-elevated);
+  color: var(--r-color-fg-muted);
+  border-radius: 4px;
+}
+.r-v2-stream-install__build-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.r-v2-stream-install__build-progress-text {
+  font-size: 12px;
+  color: var(--r-color-fg-muted);
+}
+.r-v2-stream-install__builds-loading {
+  padding: 12px;
+  display: flex;
+  justify-content: center;
 }
 </style>
