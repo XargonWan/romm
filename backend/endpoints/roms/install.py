@@ -27,6 +27,8 @@ from endpoints.responses.install import (
     InstallWorkerStatusSchema,
     ProtonBuildSchema,
     ProtonBuildsSchema,
+    ProtonDownloadProgressSchema,
+    ProtonDownloadResponseSchema,
 )
 from exceptions.endpoint_exceptions import (
     InstallConcurrencyLimitException,
@@ -34,6 +36,7 @@ from exceptions.endpoint_exceptions import (
     InstallSessionNotFoundException,
     InstallSessionRunningException,
     InstallWorkerUnavailableException,
+    ProtonBuildNotFoundException,
     RomNotFoundInDatabaseException,
 )
 from handler.auth.constants import Scope
@@ -49,7 +52,7 @@ from handler.install.manifest import (
     read_live_manifest,
     read_manifest,
 )
-from handler.install.proton_builds import list_proton_builds
+from handler.install.proton_builds import list_proton_builds, resolve_effective_build
 from handler.install.queue_status import has_install_worker
 from handler.install.runner import enqueue_install
 from handler.install.stream_copy import enqueue_stream_copy
@@ -159,6 +162,12 @@ async def start_install_session(
 
     is_windows = rom.platform.slug in WINDOWS_INSTALLABLE_SLUGS
 
+    # Resolved now (not left NULL for the worker to decide implicitly) so the
+    # client can poll /install/proton/{id}/progress and show "Downloading
+    # Proton X…" instead of a silent stall while the worker auto-downloads it
+    # on first use - see resolve_effective_build's own docstring.
+    proton_build = resolve_effective_build(data.proton_build) if is_windows else None
+
     # Every session starts in DETECTING, a non-running state, regardless of
     # platform: the concurrency check below must count sessions already
     # running, not this brand-new one. Flipping straight to STREAMING here
@@ -171,7 +180,7 @@ async def start_install_session(
             user_id=request.user.id,
             state=InstallSessionState.DETECTING,
             installer_path=data.installer_path,
-            proton_build=data.proton_build,
+            proton_build=proton_build,
             expires_at=resolve_expires_at(data.ttl_seconds),
         )
     )
@@ -333,21 +342,100 @@ async def install_worker_status(request: Request) -> InstallWorkerStatusSchema:
 @protected_route(
     router.get,
     "/install/proton-builds",
-    [Scope.ROMS_INSTALL],
+    [Scope.PLATFORMS_WRITE],
 )
 async def get_proton_builds(request: Request) -> ProtonBuildsSchema:
     """Proton builds this server knows about, installed or not.
 
-    Only an installed build can actually be selected; the rest are listed so
-    the client can show them (disabled) as a preview of "download other
-    versions", not yet implemented.
+    Installed builds are discovered at runtime by the ProtonBuildManager
+    scanning PROTON_INSTALL_ROOT. Not-yet-installed builds come from upstream
+    release APIs and can be downloaded via POST /install/proton/{id}/download.
+    Only an installed build can be used for an install session - the frontend
+    marks non-installed builds as disabled/selectable-for-download so the user
+    can set them as the default (they auto-download on first use on the worker).
     """
     return ProtonBuildsSchema(
         builds=[
-            ProtonBuildSchema(id=b.id, label=b.label, installed=b.installed)
+            ProtonBuildSchema(
+                id=b.id,
+                label=b.label,
+                installed=b.installed,
+                version=b.version,
+                path=b.path,
+                source=b.source,
+                size_bytes=b.size_bytes,
+            )
             for b in list_proton_builds()
         ]
     )
+
+
+@protected_route(
+    router.post,
+    "/install/proton/{build_id}/download",
+    [Scope.ROMS_INSTALL],
+)
+async def download_proton_build(
+    request: Request,
+    build_id: str,
+) -> ProtonDownloadResponseSchema:
+    """Enqueue a Proton build download on the install worker.
+
+    Returns the RQ job id immediately (202-style); the frontend polls
+    GET /install/proton/{build_id}/progress for completion. Only builds that
+    are listed as not-installed (source="upstream") can be downloaded.
+    """
+    builds = list_proton_builds()
+    match = next((b for b in builds if b.id == build_id), None)
+    if match is None or match.installed:
+        raise ProtonBuildNotFoundException(build_id)
+
+    from handler.install.proton_builds import enqueue_download
+
+    job_id = enqueue_download(build_id)
+    return ProtonDownloadResponseSchema(job_id=job_id)
+
+
+@protected_route(
+    router.get,
+    "/install/proton/{build_id}/progress",
+    [Scope.ROMS_INSTALL],
+)
+async def get_proton_download_progress(
+    request: Request,
+    build_id: str,
+) -> ProtonDownloadProgressSchema:
+    """Download progress (0.0-1.0) for a Proton build, or None if not in progress.
+
+    Returns ``extracting: true`` (progress=0.0) while the tarball is being
+    unpacked, so the client can show "Installing Proton…" instead of a stale
+    100 % from the completed download phase.
+    """
+    from handler.install.proton_builds import get_download_progress, is_extracting
+
+    progress = get_download_progress(build_id)
+    extracting = is_extracting(build_id)
+    return ProtonDownloadProgressSchema(progress=progress, extracting=extracting)
+
+
+@protected_route(
+    router.delete,
+    "/install/proton/{build_id}",
+    [Scope.ROMS_INSTALL],
+)
+async def delete_proton_build(
+    request: Request,
+    build_id: str,
+) -> dict[str, str]:
+    """Remove a runtime-downloaded Proton build from disk.
+
+    Only builds under PROTON_INSTALL_ROOT that were downloaded at runtime
+    can be removed; baked-in image builds are not affected.
+    """
+    from handler.install.proton_builds import remove_build
+
+    remove_build(build_id)
+    return {"message": f"Proton build {build_id} removed"}
 
 
 @protected_route(
@@ -478,6 +566,12 @@ async def install_vnc_http(
         for k, v in upstream_response.headers.items()
         if k.lower() not in _VNC_PROXY_DROP_RESPONSE_HEADERS
     }
+    # noVNC static assets are small and only change when the worker image
+    # is rebuilt — but a stale browser cache of an older ui.js/vnc.html
+    # (e.g. from a different noVNC version) causes confusing crashes like
+    # "Cannot read properties of null (reading 'addEventListener')" because
+    # the cached JS references DOM elements the cached HTML doesn't define.
+    response_headers["Cache-Control"] = "no-store"
     return StreamingResponse(
         body_stream(),
         status_code=upstream_response.status,

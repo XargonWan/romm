@@ -86,6 +86,20 @@ class InstallConcurrencyLimitException(Exception):
         return self.message
 
 
+class ProtonBuildNotFoundException(Exception):
+    def __init__(self, build_id: str):
+        self.message = (
+            f"Proton build '{build_id}' not found or not available for download"
+        )
+        super().__init__(self.message)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=self.message
+        )
+
+    def __repr__(self) -> str:
+        return self.message
+
+
 class CollectionNotFoundInDatabaseException(Exception):
     def __init__(self, id):
         self.message = f"Collection with id '{id}' not found"

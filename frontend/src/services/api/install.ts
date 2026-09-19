@@ -9,6 +9,17 @@ import type {
 } from "@/__generated__";
 import api from "@/services/api";
 
+// Locally defined response shapes for new Proton download endpoints. Once the
+// backend types are regenerated from the OpenAPI schema, these can be moved
+// back to @/__generated__.
+type ProtonDownloadResponseSchema = {
+  job_id: string;
+};
+type ProtonDownloadProgressSchema = {
+  progress: number | null;
+  extracting: boolean;
+};
+
 export const installApi = api;
 
 async function getInstallCandidates(romId: number) {
@@ -55,11 +66,27 @@ async function getInstallFiles(romId: number) {
   return api.get<InstallFilesSchema>(`/roms/${romId}/install/files`);
 }
 
-/** Proton builds the server knows about - only one is ever actually
- *  installed today; the rest are listed for a (currently disabled)
- *  "download other versions" affordance. */
+/** Proton builds the server knows about - installed (discovered on disk)
+ *  and downloadable (from upstream release APIs) alike. */
 async function getProtonBuilds() {
   return api.get<ProtonBuildsSchema>("/roms/install/proton-builds");
+}
+
+/** Enqueue a Proton build download on the install worker. Returns the RQ
+ *  job id to poll for completion via getProtonDownloadProgress. Only
+ *  downloadable (not-yet-installed) builds can be requested. */
+async function downloadProtonBuild(buildId: string) {
+  return api.post<ProtonDownloadResponseSchema>(
+    `/roms/install/proton/${buildId}/download`,
+  );
+}
+
+/** Download progress (0.0-1.0) for a Proton build, or null when no download
+ *  is in progress. */
+async function getProtonDownloadProgress(buildId: string) {
+  return api.get<ProtonDownloadProgressSchema>(
+    `/roms/install/proton/${buildId}/progress`,
+  );
 }
 
 /** This user's install sessions worth surfacing on Home (still active, or
@@ -106,4 +133,6 @@ export default {
   getInstallStreamManifest,
   getInstallStreamFileDownloadPath,
   getProtonBuilds,
+  downloadProtonBuild,
+  getProtonDownloadProgress,
 };

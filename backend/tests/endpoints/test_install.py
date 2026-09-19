@@ -368,7 +368,30 @@ class TestProtonBuilds:
     def test_lists_known_builds_with_exactly_one_installed(
         self, client: TestClient, access_token: str
     ):
-        r = client.get("/api/roms/install/proton-builds", headers=_auth(access_token))
+        from handler.install.proton_builds import ProtonBuild
+
+        with patch.object(
+            install_module,
+            "list_proton_builds",
+            lambda: (
+                ProtonBuild(
+                    id="GE-Proton10-34",
+                    label="GE-Proton 10-34",
+                    installed=True,
+                    path="/opt/proton/GE-Proton10-34/proton",
+                ),
+                ProtonBuild(
+                    id="GE-Proton11-7",
+                    label="GE-Proton 11-7",
+                    installed=False,
+                    source="upstream",
+                    download_url="https://example.com/release.tar.gz",
+                ),
+            ),
+        ):
+            r = client.get(
+                "/api/roms/install/proton-builds", headers=_auth(access_token)
+            )
         assert r.status_code == status.HTTP_200_OK
         builds = r.json()["builds"]
         assert len(builds) > 0

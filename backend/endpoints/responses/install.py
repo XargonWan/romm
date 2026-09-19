@@ -46,18 +46,52 @@ class InstallFilesSchema(BaseModel):
 
 
 class ProtonBuildSchema(BaseModel):
-    """One Proton build the server knows about (see handler.install.proton_builds)."""
+    """One Proton build the server knows about (see handler.install.proton_builds).
+
+    Installed builds are discovered at runtime by the ProtonBuildManager scanning
+    PROTON_INSTALL_ROOT (or legacy env vars) for an executable binary. Non-installed
+    builds come from upstream release APIs (GE-Proton, Proton-CachyOS) and can be
+    downloaded at runtime via POST /install/proton/{id}/download.
+    """
 
     id: str
     label: str
-    # Whether this build's binary actually exists in the sandbox image - only
-    # an installed build can be picked; others are listed for a (currently
-    # disabled) "download" affordance.
+    # Whether this build's binary actually exists on disk right now.
     installed: bool
+    # Human-readable version string from the upstream release (e.g. "10-34").
+    version: str | None = None
+    # Where this build lives on disk, if installed.
+    path: str | None = None
+    # "runtime" = discovered on disk, "upstream" = only downloadable.
+    source: str = "runtime"
+    # Approximate tarball size in bytes, only for upstream builds.
+    size_bytes: int | None = None
 
 
 class ProtonBuildsSchema(BaseModel):
     builds: list[ProtonBuildSchema]
+
+
+class ProtonDownloadResponseSchema(BaseModel):
+    """Response to POST /install/proton/{build_id}/download — the RQ job id
+    to poll for completion via GET /install/proton/{build_id}/progress."""
+
+    job_id: str
+
+
+class ProtonDownloadProgressSchema(BaseModel):
+    """Progress of an in-flight Proton download/extract (0.0–1.0).
+
+    ``progress`` is the download fraction while the tarball streams. Once the
+    download completes and extraction begins, ``extracting`` flips to true and
+    ``progress`` resets to 0.0 so the client can show an indeterminate
+    "Installing Proton…" spinner instead of a stale 100 %. None when no
+    download/extract is running for this build_id (either never started, or
+    finished and cleaned up).
+    """
+
+    progress: float | None = None
+    extracting: bool = False
 
 
 class InstallWorkerStatusSchema(BaseModel):
