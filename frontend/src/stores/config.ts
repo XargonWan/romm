@@ -46,6 +46,7 @@ const defaultConfig = {
   GAMELIST_MEDIA_IMAGE: "screenshot",
   PEGASUS_AUTO_EXPORT_ON_SCAN: false,
   INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC: null,
+  INSTALL_DEFAULT_PROTON_BUILD: null,
 } as ConfigResponse;
 
 export default defineStore("config", {

@@ -81,13 +81,19 @@ INSTALL_VNC_PORT_MAX: Final[int] = safe_int(_get_env("INSTALL_VNC_PORT_MAX"), 69
 INSTALL_WORKER_HOST: Final[str] = (
     _get_env("INSTALL_WORKER_HOST") or "romm-install-sandbox"
 )
-# Proton/Wine builds used to run Windows installers - the sandbox image bundles
-# both GE-Proton (INSTALL_PROTON_PATH, the default when a session picks no
-# build) and Proton-CachyOS (INSTALL_PROTON_CACHYOS_PATH, selectable) side by
-# side, so one still works if the other doesn't for a given installer.
-# TODO: proton manager (Phase future).
-INSTALL_PROTON_PATH: Final[str | None] = _get_env("INSTALL_PROTON_PATH")
-INSTALL_PROTON_CACHYOS_PATH: Final[str | None] = _get_env("INSTALL_PROTON_CACHYOS_PATH")
+# Proton/Wine builds used to run Windows installers. The install-sandbox image
+# extracts each build into its own subdirectory under PROTON_INSTALL_ROOT
+# (default /opt/proton) so the ProtonBuildManager can discover them at runtime
+# by scanning for an executable "proton" binary in each subdirectory.
+# Runtime-downloaded builds land here too, so baked-in and downloaded versions
+# are managed uniformly.
+PROTON_INSTALL_ROOT: Final[str] = _get_env("PROTON_INSTALL_ROOT") or "/opt/proton"
+# Default Proton build to use for new Windows install sessions when the user
+# hasn't explicitly chosen one (or chose an id that isn't installed). When the
+# build isn't on disk it is auto-downloaded on first use during install.
+# The value is a build *id* as it appears in _SOURCES (e.g. "cachyos-latest",
+# "GE-Proton10-34"). Falls back to the first installed build if unset or None.
+INSTALL_DEFAULT_PROTON_BUILD: Final[str | None] = _get_env("INSTALL_DEFAULT_PROTON_BUILD") or None
 
 # ROM UPLOADS
 # Chunked upload parts are staged on disk, under RESOURCES_BASE_PATH by default.

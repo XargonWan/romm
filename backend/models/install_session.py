@@ -89,7 +89,7 @@ class InstallSession(BaseModel):
     # Path (relative to the ROM's directory) of the installer chosen for this run.
     installer_path: Mapped[str | None] = mapped_column(String(1000), default=None)
     # Proton build id chosen for this run (see handler.install.proton_builds).
-    # NULL falls back to the server default (INSTALL_PROTON_PATH).
+    # NULL falls back to the first installed build the manager discovers.
     proton_build: Mapped[str | None] = mapped_column(String(255), default=None)
     # Absolute path of this session's working directory under INSTALL_CACHE_PATH.
     cache_path: Mapped[str | None] = mapped_column(String(1000), default=None)

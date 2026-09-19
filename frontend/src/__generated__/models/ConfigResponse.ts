@@ -40,5 +40,5 @@ export type ConfigResponse = {
     GAMELIST_MEDIA_IMAGE: MetadataMediaType;
     PEGASUS_AUTO_EXPORT_ON_SCAN: boolean;
     INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC: (number | null);
+    INSTALL_DEFAULT_PROTON_BUILD: (string | null);
 };
-

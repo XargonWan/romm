@@ -108,9 +108,15 @@ class InstallSettingsPayload(BaseModel):
     ``download_speed_limit_bytes_per_sec`` is a single server-wide cap shared
     by every concurrent install download (see handler.install.bandwidth), not
     a per-game setting - ``None``/``0`` means unlimited.
+
+    ``default_proton_build`` is the default Proton build id (e.g.
+    ``"cachyos-latest"``) used for new Windows install sessions when the user
+    hasn't explicitly chosen one. ``None`` falls back to the first build
+    discovered on disk.
     """
 
     download_speed_limit_bytes_per_sec: int | None = None
+    default_proton_build: str | None = None
 
     @field_validator("download_speed_limit_bytes_per_sec")
     @classmethod
@@ -170,6 +176,7 @@ def get_config(request: Request) -> ConfigResponse:
         GAMELIST_MEDIA_IMAGE=cfg.GAMELIST_MEDIA_IMAGE,
         PEGASUS_AUTO_EXPORT_ON_SCAN=cfg.PEGASUS_AUTO_EXPORT_ON_SCAN,
         INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC=cfg.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC,
+        INSTALL_DEFAULT_PROTON_BUILD=cfg.INSTALL_DEFAULT_PROTON_BUILD,
     )
 
 
@@ -309,7 +316,8 @@ async def update_install_settings(
     """
     try:
         cm.update_install_settings(
-            download_speed_limit_bytes_per_sec=payload.download_speed_limit_bytes_per_sec
+            download_speed_limit_bytes_per_sec=payload.download_speed_limit_bytes_per_sec,
+            default_proton_build=payload.default_proton_build,
         )
     except ConfigNotWritableException as exc:
         log.critical(exc.message)

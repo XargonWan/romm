@@ -207,6 +207,10 @@ class Config:
     # Global cap shared by every concurrent stream-install download, in
     # bytes/sec. None (or <= 0) means unlimited. See handler.install.bandwidth.
     INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC: int | None
+    # Default Proton build id for new install sessions (e.g. "cachyos-latest").
+    # When None, the runner falls back to the first build discovered on disk.
+    # When the chosen build isn't installed, it is auto-downloaded on first use.
+    INSTALL_DEFAULT_PROTON_BUILD: str | None
 
     def __init__(self, **entries):
         self.__dict__.update(entries)
@@ -545,6 +549,9 @@ class ConfigManager:
             INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC=pydash.get(
                 self._raw_config, "install.download_speed_limit_bytes_per_sec", None
             ),
+            INSTALL_DEFAULT_PROTON_BUILD=pydash.get(
+                self._raw_config, "install.default_proton_build", None
+            ) or os.environ.get("INSTALL_DEFAULT_PROTON_BUILD") or None,
         )
 
     def _get_ejs_controls(self) -> dict[str, EjsControls]:
@@ -849,6 +856,15 @@ class ConfigManager:
             )
             sys.exit(3)
 
+        if self.config.INSTALL_DEFAULT_PROTON_BUILD is not None and (
+            not isinstance(self.config.INSTALL_DEFAULT_PROTON_BUILD, str)
+            or not self.config.INSTALL_DEFAULT_PROTON_BUILD.strip()
+        ):
+            log.critical(
+                "Invalid config.yml: install.default_proton_build must be a non-empty string"
+            )
+            sys.exit(3)
+
     def get_config(self) -> Config:
         try:
             with open(self.config_file, "r") as config_file:
@@ -935,6 +951,7 @@ class ConfigManager:
                 "download_speed_limit_bytes_per_sec": (
                     self.config.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC
                 ),
+                "default_proton_build": self.config.INSTALL_DEFAULT_PROTON_BUILD,
             },
         }
 
@@ -1061,18 +1078,23 @@ class ConfigManager:
         self._update_config_file()
 
     def update_install_settings(
-        self, *, download_speed_limit_bytes_per_sec: int | None
+        self,
+        *,
+        download_speed_limit_bytes_per_sec: int | None,
+        default_proton_build: str | None = None,
     ) -> None:
-        """Set the global stream-install bandwidth cap and persist it.
+        """Set global install settings and persist them to config.yml.
 
-        Shared by every concurrent install download (see
-        handler.install.bandwidth) - the endpoint that calls this is also
-        responsible for pushing the new value into that limiter, since this
-        module stays free of any handler-layer import.
+        ``download_speed_limit_bytes_per_sec`` is a single server-wide cap shared
+        by every concurrent install download (see handler.install.bandwidth).
+        ``default_proton_build`` is the default Proton build id for new install
+        sessions (None = fall back to first installed build on disk).
         """
         self.config.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC = (
             download_speed_limit_bytes_per_sec
         )
+        if default_proton_build is not None:
+            self.config.INSTALL_DEFAULT_PROTON_BUILD = default_proton_build
         self._update_config_file()
 
 
