@@ -141,8 +141,14 @@ class TestWrapForSandbox:
         )
         return captured
 
-    def test_binds_only_the_resolved_proton_builds_directory(self, monkeypatch):
+    def test_binds_only_the_resolved_proton_builds_directory(
+        self, monkeypatch, tmp_path
+    ):
         captured = self._captured_ro_binds(monkeypatch)
+        proton_dir = tmp_path / "GE-Proton10-34"
+        proton_dir.mkdir()
+        proton_bin = proton_dir / "proton"
+        proton_bin.write_text("")
 
         runner._wrap_for_sandbox(
             ["true"],
@@ -150,11 +156,11 @@ class TestWrapForSandbox:
             work_dir="/work",
             proton_prefix="/prefix",
             display=":50",
-            proton_or_wine="/opt/proton/GE-Proton10-34/proton",
+            proton_or_wine=str(proton_bin),
         )
 
         # Only the selected build's directory is bound, not all possible ones.
-        assert captured[0] == ("/opt/proton/GE-Proton10-34",)
+        assert captured[0] == (str(proton_dir),)
 
     def test_binds_nothing_for_plain_wine(self, monkeypatch):
         captured = self._captured_ro_binds(monkeypatch)
@@ -187,6 +193,63 @@ class TestWrapForSandbox:
         )
         # Path doesn't exist on the test machine, so no ro_bind is set.
         assert captured[0] == ()
+
+    def test_binds_installer_search_root_when_it_exists(self, monkeypatch, tmp_path):
+        # Sibling data files (setup-N.bin, Data1.cab, ...) live next to the
+        # installer for multi-part InstallShield-based installers -
+        # ISArcExtract needs the whole containing directory visible, not
+        # just the one file SandboxSpec always binds on its own.
+        captured = self._captured_ro_binds(monkeypatch)
+
+        runner._wrap_for_sandbox(
+            ["true"],
+            installer_abs=str(tmp_path / "setup.exe"),
+            work_dir="/work",
+            proton_prefix="/prefix",
+            display=":50",
+            proton_or_wine="wine",
+            installer_search_root=str(tmp_path),
+        )
+
+        assert captured[0] == (str(tmp_path),)
+
+    def test_skips_installer_search_root_when_it_doesnt_exist(self, monkeypatch):
+        captured = self._captured_ro_binds(monkeypatch)
+
+        runner._wrap_for_sandbox(
+            ["true"],
+            installer_abs="/library/win/game/setup.exe",
+            work_dir="/work",
+            proton_prefix="/prefix",
+            display=":50",
+            proton_or_wine="wine",
+            installer_search_root="/does/not/exist",
+        )
+
+        assert captured[0] == ()
+
+    def test_combines_proton_and_installer_search_root_binds(
+        self, monkeypatch, tmp_path
+    ):
+        captured = self._captured_ro_binds(monkeypatch)
+        proton_dir = tmp_path / "proton_build"
+        proton_dir.mkdir()
+        proton_bin = proton_dir / "proton"
+        proton_bin.write_text("")
+        installer_dir = tmp_path / "game"
+        installer_dir.mkdir()
+
+        runner._wrap_for_sandbox(
+            ["true"],
+            installer_abs=str(installer_dir / "setup.exe"),
+            work_dir="/work",
+            proton_prefix="/prefix",
+            display=":50",
+            proton_or_wine=str(proton_bin),
+            installer_search_root=str(installer_dir),
+        )
+
+        assert captured[0] == (str(proton_dir), str(installer_dir))
 
     def test_sandbox_disabled_skips_bwrap_entirely(self, monkeypatch):
         monkeypatch.setattr(runner, "INSTALL_SANDBOX_ENABLED", False)
@@ -349,7 +412,7 @@ class TestFocusMaintenanceLoop:
         focus_calls: list[dict] = []
         stop = threading.Event()
 
-        def fake_focus(env):
+        def fake_focus(env, state):
             focus_calls.append(env)
             if len(focus_calls) >= 3:
                 stop.set()
@@ -361,11 +424,33 @@ class TestFocusMaintenanceLoop:
         assert len(focus_calls) == 3
         assert all(env["DISPLAY"] == ":99" for env in focus_calls)
 
+    def test_passes_the_same_state_across_every_call(self, monkeypatch):
+        # A fresh _FocusState per loop invocation (one per install run), but
+        # the *same* instance threaded through every tick within that run -
+        # otherwise "new window" detection could never work (everything
+        # would look new every time).
+        monkeypatch.setattr(runner, "FOCUS_MAINTENANCE_INTERVAL", 0)
+
+        states: list[runner._FocusState] = []
+        stop = threading.Event()
+
+        def fake_focus(env, state):
+            states.append(state)
+            if len(states) >= 3:
+                stop.set()
+
+        monkeypatch.setattr(runner, "_focus_installer_window", fake_focus)
+
+        runner._focus_maintenance_loop(":99", stop)
+
+        assert len(states) == 3
+        assert states[0] is states[1] is states[2]
+
     def test_never_sends_any_key(self, monkeypatch):
         # This loop only ever grabs focus - it must never type or click on
         # the user's behalf; they drive the installer through VNC themselves.
         monkeypatch.setattr(runner, "FOCUS_MAINTENANCE_INTERVAL", 0)
-        monkeypatch.setattr(runner, "_focus_installer_window", lambda env: None)
+        monkeypatch.setattr(runner, "_focus_installer_window", lambda env, state: None)
 
         key_calls = []
         monkeypatch.setattr(
@@ -383,7 +468,9 @@ class TestFocusMaintenanceLoop:
     def test_stops_promptly_when_signalled(self, monkeypatch):
         focus_calls: list[dict] = []
         monkeypatch.setattr(
-            runner, "_focus_installer_window", lambda env: focus_calls.append(env)
+            runner,
+            "_focus_installer_window",
+            lambda env, state: focus_calls.append(env),
         )
 
         stop = threading.Event()
@@ -416,7 +503,12 @@ class TestFocusInstallerWindow:
 
         return fake_run, calls
 
-    def test_focuses_the_largest_non_chrome_window(self, monkeypatch):
+    def test_focuses_the_largest_non_chrome_window_on_first_check(
+        self, monkeypatch
+    ):
+        # Nothing has been seen yet, so every non-chrome candidate is
+        # technically "new" - with only one real candidate, that's
+        # indistinguishable from the old largest-area behaviour.
         fake_run, calls = self._fake_run(
             {
                 "1": ("IceTopWin", "1x1"),
@@ -430,7 +522,7 @@ class TestFocusInstallerWindow:
         )
         monkeypatch.setattr(runner.subprocess, "run", fake_run)
 
-        runner._focus_installer_window({"DISPLAY": ":99"})
+        runner._focus_installer_window({"DISPLAY": ":99"}, runner._FocusState())
 
         focus_call = next(c for c in calls if c[1] == "windowfocus")
         assert focus_call == ["xdotool", "windowfocus", "--sync", "2"]
@@ -441,7 +533,7 @@ class TestFocusInstallerWindow:
         )
         monkeypatch.setattr(runner.subprocess, "run", fake_run)
 
-        runner._focus_installer_window({"DISPLAY": ":99"})
+        runner._focus_installer_window({"DISPLAY": ":99"}, runner._FocusState())
 
         assert not any(c[1] == "windowfocus" for c in calls)
 
@@ -452,7 +544,72 @@ class TestFocusInstallerWindow:
         monkeypatch.setattr(runner.subprocess, "run", fake_run)
 
         # Must not raise: a missing/misbehaving xdotool shouldn't crash the install.
-        runner._focus_installer_window({"DISPLAY": ":99"})
+        runner._focus_installer_window({"DISPLAY": ":99"}, runner._FocusState())
+
+    def test_a_new_small_window_wins_over_a_bigger_already_seen_one(
+        self, monkeypatch
+    ):
+        # The actual bug this loop used to have: a big window (e.g. a
+        # progress/splash dialog) is already on screen and already seen,
+        # then a small dialog needing immediate keyboard input (e.g. "press
+        # Up to dismiss") pops up. Picking by size alone would keep the big
+        # window focused forever; the newly-appeared small one must win.
+        state = runner._FocusState()
+        fake_run, _ = self._fake_run({"10": ("Big Splash", "800x600")})
+        monkeypatch.setattr(runner.subprocess, "run", fake_run)
+        runner._focus_installer_window({"DISPLAY": ":99"}, state)
+        assert state.target == "10"
+
+        fake_run2, calls2 = self._fake_run(
+            {
+                "10": ("Big Splash", "800x600"),
+                "11": ("Select Setup Language", "297x125"),
+            }
+        )
+        monkeypatch.setattr(runner.subprocess, "run", fake_run2)
+        runner._focus_installer_window({"DISPLAY": ":99"}, state)
+
+        focus_call = next(c for c in calls2 if c[1] == "windowfocus")
+        assert focus_call == ["xdotool", "windowfocus", "--sync", "11"]
+        assert state.target == "11"
+
+    def test_stays_on_target_across_ticks_instead_of_reverting_to_the_bigger_window(
+        self, monkeypatch
+    ):
+        # This is the part the naive "prefer new, else largest" version
+        # would get wrong: on the tick *after* the small window won, it's no
+        # longer "new" - without a sticky target, largest-area would pick
+        # the big window right back, undoing the fix a second later.
+        state = runner._FocusState()
+        both = {
+            "10": ("Big Splash", "800x600"),
+            "11": ("Select Setup Language", "297x125"),
+        }
+        fake_run, _ = self._fake_run(both)
+        monkeypatch.setattr(runner.subprocess, "run", fake_run)
+        runner._focus_installer_window({"DISPLAY": ":99"}, state)  # "10" is new
+        runner._focus_installer_window({"DISPLAY": ":99"}, state)  # "11" is new
+        assert state.target == "11"
+
+        fake_run2, calls2 = self._fake_run(both)  # nothing new this tick
+        monkeypatch.setattr(runner.subprocess, "run", fake_run2)
+        runner._focus_installer_window({"DISPLAY": ":99"}, state)
+
+        focus_call = next(c for c in calls2 if c[1] == "windowfocus")
+        assert focus_call == ["xdotool", "windowfocus", "--sync", "11"]
+
+    def test_falls_back_to_largest_when_the_target_disappears(self, monkeypatch):
+        state = runner._FocusState(seen_ids={"10", "11"}, target="11")
+        # "11" (the previous target) is gone; only "10" remains, and it's
+        # already in seen_ids so it isn't "new" either.
+        fake_run, calls = self._fake_run({"10": ("Big Splash", "800x600")})
+        monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+        runner._focus_installer_window({"DISPLAY": ":99"}, state)
+
+        focus_call = next(c for c in calls if c[1] == "windowfocus")
+        assert focus_call == ["xdotool", "windowfocus", "--sync", "10"]
+        assert state.target == "10"
 
 
 class TestRunInstaller:
