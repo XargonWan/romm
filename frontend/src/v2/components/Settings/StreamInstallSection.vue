@@ -1,5 +1,11 @@
 <script setup lang="ts">
-import { RBtn, RProgressCircular, RSelect, RTextField } from "@v2/lib";
+import {
+  RBtn,
+  RDivider,
+  RProgressCircular,
+  RSelect,
+  RTextField,
+} from "@v2/lib";
 import { storeToRefs } from "pinia";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
@@ -27,7 +33,14 @@ function configToKbPerSec(cfg: Config): number | null {
 const kbPerSec = ref<number | null>(configToKbPerSec(config.value));
 const savedSnapshot = ref(kbPerSec.value);
 
-const protonBuilds = ref<Array<{ id: string; label: string; installed: boolean; version?: string | null }>>([]);
+const protonBuilds = ref<
+  Array<{
+    id: string;
+    label: string;
+    installed: boolean;
+    version?: string | null;
+  }>
+>([]);
 const selectedProtonBuild = ref<string | null>(
   config.value.INSTALL_DEFAULT_PROTON_BUILD,
 );
@@ -46,9 +59,7 @@ const canEdit = computed(
     authStore.scopes.includes("platforms.write") &&
     config.value.CONFIG_FILE_WRITABLE,
 );
-const canDownload = computed(
-  () => authStore.scopes.includes("roms.install"),
-);
+const canDownload = computed(() => authStore.scopes.includes("roms.install"));
 
 const loading = ref(true);
 const saving = ref(false);
@@ -134,7 +145,9 @@ async function startDownload(buildId: string) {
     };
     const detail =
       e?.response?.data?.detail || e?.response?.statusText || e?.message;
-    snackbar.error(t("install.proton-download-failed", { name: buildId, detail }));
+    snackbar.error(
+      t("rom.install-proton-download-failed", { name: buildId, detail }),
+    );
     delete downloadingBuilds.value[buildId];
   }
 }
@@ -144,7 +157,10 @@ const DOWNLOAD_POLL_INTERVAL_MS = 2000;
 function scheduleDownloadPoll(buildId: string) {
   if (downloadPollTimer !== null) clearTimeout(downloadPollTimer);
   if (stopped) return;
-  downloadPollTimer = setTimeout(() => pollDownloadProgress(buildId), DOWNLOAD_POLL_INTERVAL_MS);
+  downloadPollTimer = setTimeout(
+    () => pollDownloadProgress(buildId),
+    DOWNLOAD_POLL_INTERVAL_MS,
+  );
 }
 
 async function pollDownloadProgress(buildId: string) {
@@ -157,7 +173,9 @@ async function pollDownloadProgress(buildId: string) {
       downloadPollTimer = null;
       await loadProtonBuilds();
       delete downloadingBuilds.value[buildId];
-      snackbar.success(t("install.proton-download-complete", { name: buildId }));
+      snackbar.success(
+        t("rom.install-proton-download-complete", { name: buildId }),
+      );
     } else {
       downloadingBuilds.value[buildId] = data.progress;
       scheduleDownloadPoll(buildId);
@@ -223,16 +241,19 @@ const downloadableBuilds = computed(() =>
         item-value="id"
       />
 
-      <div v-if="protonBuilds.length === 0 && !loadingBuilds" class="r-v2-stream-install__no-builds">
+      <div
+        v-if="protonBuilds.length === 0 && !loadingBuilds"
+        class="r-v2-stream-install__no-builds"
+      >
         <p class="r-v2-stream-install__desc">
-          {{ t("install.proton-no-installs") }}
+          {{ t("rom.install-proton-no-installs") }}
         </p>
       </div>
 
       <div class="r-v2-stream-install__builds-divider">
         <RDivider inset />
         <span class="r-v2-stream-install__builds-divider-text">
-          {{ t("install.proton-available-downloads") }}
+          {{ t("rom.install-proton-available-downloads") }}
         </span>
         <RDivider inset />
       </div>
@@ -243,13 +264,18 @@ const downloadableBuilds = computed(() =>
         class="r-v2-stream-install__build-row"
       >
         <div class="r-v2-stream-install__build-info">
-          <span class="r-v2-stream-install__build-label">{{ build.label }}</span>
+          <span class="r-v2-stream-install__build-label">{{
+            build.label
+          }}</span>
           <span class="r-v2-stream-install__build-badge">
-            {{ t("install.proton-downloadable") }}
+            {{ t("rom.install-proton-downloadable") }}
           </span>
         </div>
 
-        <div v-if="downloadingBuilds[build.id] !== undefined" class="r-v2-stream-install__build-progress">
+        <div
+          v-if="downloadingBuilds[build.id] !== undefined"
+          class="r-v2-stream-install__build-progress"
+        >
           <RProgressCircular
             :value="downloadingBuilds[build.id]"
             :indeterminate="downloadingBuilds[build.id] <= 0"
@@ -270,7 +296,7 @@ const downloadableBuilds = computed(() =>
           :disabled="!canEdit || !canDownload"
           @click="startDownload(build.id)"
         >
-          {{ t("install.proton-download-btn") }}
+          {{ t("rom.install-proton-download-btn") }}
         </RBtn>
       </div>
 

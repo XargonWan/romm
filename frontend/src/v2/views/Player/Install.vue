@@ -300,7 +300,7 @@ const downloadSpeedLimitLabel = computed(() =>
         class="r-v2-install__pending"
       >
         <div class="r-v2-install__spinner" aria-hidden="true" />
-        <p>{{ pendingLabel }}</p>
+        <p class="r-v2-install__pending-label">{{ pendingLabel }}</p>
         <div
           v-if="install.protonDownloadProgress.value !== null"
           class="r-v2-install__dl-progress"
@@ -500,6 +500,10 @@ const downloadSpeedLimitLabel = computed(() =>
   padding: 32px;
   text-align: center;
   color: var(--r-color-fg-secondary);
+}
+.r-v2-install__pending-label {
+  color: #b880ff;
+  text-shadow: 0 0 14px rgba(184, 128, 255, 0.55);
 }
 .r-v2-install__dl-progress {
   width: 220px;
