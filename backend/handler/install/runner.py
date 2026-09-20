@@ -21,6 +21,7 @@ import os
 import subprocess
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -134,9 +135,15 @@ def _wine_or_proton(proton_build: str | None = None) -> str:
             return resolved
         try:
             _ensure_proton_build(proton_build)
-            return resolve_proton_path(proton_build) or "wine"
+            resolved = resolve_proton_path(proton_build)
+            if resolved:
+                return resolved
         except TimeoutError:
             log.warning(f"Auto-download of Proton {proton_build} timed out, falling back")
+        # proton_build was requested but never resolved (unknown id, or the
+        # download failed/timed out) - fall through to the same defaults an
+        # unset choice would use below, rather than dropping straight to
+        # plain Wine (see this function's own docstring).
 
     # Global default from settings (library-management / stream-install config).
     if INSTALL_DEFAULT_PROTON_BUILD:
@@ -319,12 +326,16 @@ def run_install(install_session_id: int) -> None:
     # InstallShield-based multi-part installers (their ISArcExtract/ISDone.dll
     # archive extractor) look for sibling data files (setup-N.bin, Data1.cab,
     # ...) next to the installer .exe at runtime, not just the .exe itself -
-    # without this, bwrap only exposes the single chosen file and the
+    # and older/DOS-era titles in particular sometimes nest those siblings a
+    # subfolder or two below the installer rather than right next to it.
+    # Without this, bwrap only exposes the single chosen file and the
     # installer fails with "It is not found any file specified for
     # ISArcExtract" the instant it needs a sibling it can't see. Bind the
     # installer's actual containing root read-only: the ROM's own library
     # directory normally, or the archive's scratch extraction root when the
     # installer came from inside an archive/ISO (see archive_prescan above).
+    # A directory ro-bind is a real (recursive) mount, not a flat file
+    # listing - every subfolder underneath is visible too, however deep.
     if extract_temp_dir is not None:
         installer_search_root = extract_root
     else:
@@ -616,6 +627,23 @@ def _run_installer(argv: list[str], display: str) -> None:
         focus_thread.join(timeout=2)
 
 
+@dataclass
+class _FocusState:
+    """Carried across every tick of one install run's focus-maintenance loop.
+
+    ``seen_ids`` is every non-chrome window id ever observed this run, so a
+    freshly-appeared window can be told apart from one that's been on screen
+    for a while. ``target`` is the window this loop is currently deliberately
+    keeping focused - kept sticky across ticks (see _focus_installer_window)
+    rather than recomputed by size every time, so grabbing focus onto a new,
+    small dialog doesn't get silently undone a second later by a bigger,
+    already-seen window still sitting behind it.
+    """
+
+    seen_ids: set[str] = field(default_factory=set)
+    target: str | None = None
+
+
 def _focus_maintenance_loop(display: str, stop: threading.Event) -> None:
     """Keep whatever installer dialog is currently on screen actually usable.
 
@@ -632,12 +660,14 @@ def _focus_maintenance_loop(display: str, stop: threading.Event) -> None:
     Runs unsandboxed (it never touches the installer's files, only the
     shared X display) since xdotool talks to the X server directly
     regardless of which mount/pid namespace the installer's client process
-    is in.
+    is in. A fresh ``_FocusState`` is scoped to this one call (one thread per
+    install run - see ``_run_installer``), so it never leaks across sessions.
     """
     env = {**os.environ, "DISPLAY": display}
-    _focus_installer_window(env)
+    state = _FocusState()
+    _focus_installer_window(env, state)
     while not stop.wait(FOCUS_MAINTENANCE_INTERVAL):
-        _focus_installer_window(env)
+        _focus_installer_window(env, state)
 
 
 # IceWM's own window furniture on a session used for nothing but a single
@@ -668,7 +698,7 @@ _ICEWM_CHROME_NAMES = frozenset(
 )
 
 
-def _focus_installer_window(env: dict) -> None:
+def _focus_installer_window(env: dict, state: _FocusState) -> None:
     """Force real X11 input focus onto the installer's own window.
 
     IceWM's automatic focus-on-map policy (FocusOnMapTransient, see
@@ -679,6 +709,22 @@ def _focus_installer_window(env: dict) -> None:
     and suspenders: explicitly (re-)grab focus on whatever looks like the
     actual app window on every check, rather than trusting the WM got it
     right once at map time.
+
+    Picking "largest window" alone was found to pick the *wrong* window for
+    some multi-window installer stages (older InstallShield-style wizards
+    especially): a small dialog that needs immediate keyboard input (e.g.
+    "press Up to dismiss") pops up while a bigger, already-on-screen window
+    (a splash/progress dialog) stays put behind it - by area alone the
+    bigger one always wins, so real focus never reaches the dialog the user
+    is actually trying to interact with, every single tick. Preferring
+    whichever window is *new* since the last check (via `state.seen_ids`)
+    catches exactly that case; once chosen, that window stays the sticky
+    `state.target` across later ticks (still re-asserted each time, per the
+    docstring above) instead of being immediately re-evaluated by size again
+    - otherwise the bigger window would just steal focus straight back a
+    second later, undoing the fix. Falls back to the largest-area heuristic
+    only when there's no "new" window to prefer (nothing changed) or the
+    current target itself has disappeared.
     """
     try:
         result = subprocess.run(
@@ -692,8 +738,7 @@ def _focus_installer_window(env: dict) -> None:
     except (OSError, subprocess.TimeoutExpired):
         return
 
-    best_id: str | None = None
-    best_area = 0
+    candidates: list[tuple[str, int]] = []
     for window_id in result.stdout.split():
         try:
             name = subprocess.run(
@@ -720,18 +765,38 @@ def _focus_installer_window(env: dict) -> None:
             area = int(dims.get("WIDTH", 0)) * int(dims.get("HEIGHT", 0))
         except (OSError, subprocess.TimeoutExpired, ValueError):
             continue
-        if area > best_area:
-            best_area = area
-            best_id = window_id
+        candidates.append((window_id, area))
 
-    if best_id is not None:
-        subprocess.run(
-            ["xdotool", "windowfocus", "--sync", best_id],
-            env=env,
-            check=False,
-            capture_output=True,
-            timeout=2,
-        )
+    if not candidates:
+        return
+
+    candidate_ids = {window_id for window_id, _ in candidates}
+    new_ids = candidate_ids - state.seen_ids
+    state.seen_ids |= candidate_ids
+
+    if new_ids:
+        # Several could appear in the same one-second tick - the numerically
+        # largest id is the most recently created one, X11 ids being handed
+        # out in increasing order within a session.
+        try:
+            state.target = max(new_ids, key=int)
+        except ValueError:
+            state.target = next(iter(new_ids))
+    elif state.target not in candidate_ids:
+        # The sticky target disappeared (closed/replaced) with nothing
+        # freshly new to pick up in its place - fall back to whatever's
+        # biggest rather than focusing nothing at all.
+        state.target = max(candidates, key=lambda c: c[1])[0]
+    # else: target is unchanged and still on screen - keep reasserting focus
+    # on it below, exactly as before.
+
+    subprocess.run(
+        ["xdotool", "windowfocus", "--sync", state.target],
+        env=env,
+        check=False,
+        capture_output=True,
+        timeout=2,
+    )
 
 
 def _fail(install_session_id: int, error: str) -> None:
