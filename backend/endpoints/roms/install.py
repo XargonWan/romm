@@ -12,7 +12,7 @@ from starlette.authentication import requires
 from starlette.responses import FileResponse, StreamingResponse
 from starlette.websockets import WebSocketState
 
-from config import DEV_MODE, INSTALL_MAX_CONCURRENCY, INSTALL_WORKER_HOST
+from config import DEV_MODE, INSTALL_MAX_CONCURRENCY, INSTALL_WORKER_HOST, ROMM_BASE_URL
 from decorators.auth import protected_route
 from endpoints.responses.install import (
     InstallCandidatesSchema,
@@ -43,7 +43,10 @@ from handler.auth.constants import Scope
 from handler.auth.dependencies import assert_rom_visible
 from handler.database import db_install_session_handler, db_rom_handler
 from handler.filesystem import fs_rom_handler
-from handler.filesystem.installer_detection import WINDOWS_INSTALLABLE_SLUGS
+from handler.filesystem.installer_detection import (
+    WINDOWS_INSTALLABLE_SLUGS,
+    pick_confident_installer,
+)
 from handler.install import bandwidth, stream_presence
 from handler.install.manifest import (
     find_manifest_entry,
@@ -84,6 +87,20 @@ class InstallStartForm(BaseModel):
     # Cache lifetime in seconds. ``None`` uses the configured default TTL,
     # a value <= 0 means unlimited (never auto-evict).
     ttl_seconds: int | None = None
+
+
+def _session_schema(rom_id: int, session: InstallSession) -> InstallSessionSchema:
+    """Build the response schema, filling in `manual_install_url` for a
+    session that's actually waiting on one (see the field's own docstring) -
+    every endpoint that returns a session goes through this so no client
+    (this includes polling `GET /{id}/install`, not just the initial POST)
+    ever sees AWAITING_INSTALLER without also getting the URL to send a
+    human to.
+    """
+    schema = InstallSessionSchema.model_validate(session)
+    if schema.state == InstallSessionState.AWAITING_INSTALLER:
+        schema.manual_install_url = f"{ROMM_BASE_URL}/rom/{rom_id}/install"
+    return schema
 
 
 @protected_route(
@@ -143,24 +160,61 @@ async def start_install_session(
     id: Annotated[int, PathVar(description="Rom internal id.", ge=1)],
     data: Annotated[InstallStartForm, Body()],
 ) -> InstallSessionSchema:
-    """Create (or return the in-flight) install session for a ROM.
+    """Create (or return) the install session for a ROM - the single
+    entrypoint every client (web UI, CLI, ...) drives to get from "nothing
+    yet" to "streamable", so they all get the exact same behavior for free
+    instead of each re-implementing it:
 
-    Reuses an existing active session for this user+ROM instead of starting a
-    duplicate run. The chosen installer and cache TTL are recorded here. When a
-    Windows ROM has an installer selected, the sandbox runner is enqueued.
+    - Already running (INSTALLING/STREAMING)? Handed back as-is - never
+      starts a second run.
+    - Already installed (latest session is DONE)? A plain POST here still
+      starts a genuinely new attempt (a fresh session, a fresh cache
+      directory) - there's no separate "Reinstall" concept, pressing
+      Install always tries to install. A client that wants "already have
+      it, just stream what's there, don't touch the worker at all" (the
+      CLI's own default behavior) checks `GET /{id}/install` itself first
+      and only calls this when that isn't already DONE - see
+      cli/romm-install-cli.py's own docstring. A client that wants the old
+      cache gone first calls `DELETE /{id}/install` before this, same as
+      always.
+    - No installer chosen? Tries to resolve one itself first
+      (`pick_confident_installer`, the same "well-known installer name"
+      threshold the web UI used to apply client-side) before ever asking a
+      human. Only when that fails does the session sit in
+      AWAITING_INSTALLER with `manual_install_url` set - "manual mode": a
+      person has to pick a file (and watch the installer's own dialogs)
+      through the web Install page. There's no "auto mode" (e.g. OCR-driven,
+      clicking through it unattended) yet - AWAITING_INSTALLER is the only
+      outcome for now when auto-pick can't confidently decide.
+    - Otherwise (Windows with a resolved path, or any non-Windows ROM): the
+      sandbox runner (or stream-copy) is enqueued immediately.
     """
     rom = db_rom_handler.get_rom(id)
     if not rom:
         raise RomNotFoundInDatabaseException(id)
     assert_rom_visible(request, rom)
 
-    existing = db_install_session_handler.get_active_session_for_rom(
+    latest = db_install_session_handler.get_latest_session_for_rom(
         rom.id, request.user.id
     )
-    if existing:
-        return InstallSessionSchema.model_validate(existing)
+    if latest and latest.state in RUNNING_INSTALL_STATES:
+        return _session_schema(rom.id, latest)
+    # DONE/FAILED/EXPIRED (or None) has nothing running worth protecting -
+    # a fresh POST always starts a genuinely new attempt for any of them.
+    # DETECTING/AWAITING_INSTALLER (never enqueued) is the only case
+    # actually resumed below, updated in place rather than left to
+    # accumulate a duplicate row per retry.
+    existing = latest if latest and latest.state in ACTIVE_INSTALL_STATES else None
 
     is_windows = rom.platform.slug in WINDOWS_INSTALLABLE_SLUGS
+
+    installer_path = data.installer_path
+    if is_windows and installer_path is None:
+        candidates = fs_rom_handler.get_installer_candidates(rom)
+        confident = pick_confident_installer(candidates)
+        if confident is not None:
+            installer_path = confident.path
+    needs_manual_pick = is_windows and not installer_path
 
     # Resolved now (not left NULL for the worker to decide implicitly) so the
     # client can poll /install/proton/{id}/progress and show "Downloading
@@ -168,28 +222,48 @@ async def start_install_session(
     # on first use - see resolve_effective_build's own docstring.
     proton_build = resolve_effective_build(data.proton_build) if is_windows else None
 
-    # Every session starts in DETECTING, a non-running state, regardless of
-    # platform: the concurrency check below must count sessions already
-    # running, not this brand-new one. Flipping straight to STREAMING here
-    # for non-Windows ROMs would count this session against itself and reject
-    # every stream-copy install outright once INSTALL_MAX_CONCURRENCY sessions
-    # (default 1) exist anywhere, including itself.
-    session = db_install_session_handler.add_session(
-        InstallSession(
-            rom_id=rom.id,
-            user_id=request.user.id,
-            state=InstallSessionState.DETECTING,
-            installer_path=data.installer_path,
-            proton_build=proton_build,
-            expires_at=resolve_expires_at(data.ttl_seconds),
-        )
+    initial_state = (
+        InstallSessionState.AWAITING_INSTALLER
+        if needs_manual_pick
+        else InstallSessionState.DETECTING
     )
+    if existing:
+        # Never enqueued, and this call has something new to offer (a
+        # resolved path this time, or at least a fresh detection attempt) -
+        # update in place rather than creating a second row for the same
+        # in-progress attempt.
+        session = db_install_session_handler.update_session(
+            existing.id,
+            {
+                "installer_path": installer_path,
+                "proton_build": proton_build,
+                "state": initial_state,
+            },
+        )
+    else:
+        # Every session starts non-running regardless of platform: the
+        # concurrency check below must count sessions already running, not
+        # this brand-new one. Flipping straight to STREAMING here for
+        # non-Windows ROMs would count this session against itself and
+        # reject every stream-copy install outright once
+        # INSTALL_MAX_CONCURRENCY sessions (default 1) exist anywhere,
+        # including itself.
+        session = db_install_session_handler.add_session(
+            InstallSession(
+                rom_id=rom.id,
+                user_id=request.user.id,
+                state=initial_state,
+                installer_path=installer_path,
+                proton_build=proton_build,
+                expires_at=resolve_expires_at(data.ttl_seconds),
+            )
+        )
 
-    # A Windows ROM with a chosen installer can start running immediately; one
-    # awaiting a manual pick stays in DETECTING until the client posts a path.
-    # A non-Windows ROM has nothing to run, so it goes straight to copying.
-    if is_windows and not data.installer_path:
-        return InstallSessionSchema.model_validate(session)
+    # A Windows ROM with a resolved installer can start running immediately;
+    # one still awaiting a manual pick stays in AWAITING_INSTALLER. A
+    # non-Windows ROM has nothing to run, so it goes straight to copying.
+    if needs_manual_pick:
+        return _session_schema(rom.id, session)
 
     if db_install_session_handler.count_running_sessions() >= INSTALL_MAX_CONCURRENCY:
         db_install_session_handler.delete_session(session.id)
@@ -216,7 +290,7 @@ async def start_install_session(
             {"state": InstallSessionState.STREAMING, "job_id": job_id},
         )
 
-    return InstallSessionSchema.model_validate(session)
+    return _session_schema(rom.id, session)
 
 
 @protected_route(
@@ -240,7 +314,7 @@ async def get_install_session(
     )
     if not session:
         raise InstallSessionNotFoundException(id)
-    return InstallSessionSchema.model_validate(session)
+    return _session_schema(rom.id, session)
 
 
 @protected_route(

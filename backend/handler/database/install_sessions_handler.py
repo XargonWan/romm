@@ -35,27 +35,6 @@ class DBInstallSessionsHandler(DBBaseHandler):
         return session.get(InstallSession, install_session_id)
 
     @begin_session
-    def get_active_session_for_rom(
-        self,
-        rom_id: int,
-        user_id: int,
-        session: Session = None,  # type: ignore
-    ) -> InstallSession | None:
-        """Return the current non-terminal install session for a user+rom, if any."""
-        return session.scalars(
-            select(InstallSession)
-            .where(
-                InstallSession.rom_id == rom_id,
-                InstallSession.user_id == user_id,
-                InstallSession.state.in_(ACTIVE_INSTALL_STATES),
-            )
-            # id as a tiebreaker: two sessions can share a created_at (column
-            # resolution, or just two fast inserts), and ORDER BY alone is
-            # then ambiguous about which one is "latest".
-            .order_by(InstallSession.created_at.desc(), InstallSession.id.desc())
-        ).first()
-
-    @begin_session
     def get_latest_session_for_rom(
         self,
         rom_id: int,

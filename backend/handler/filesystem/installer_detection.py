@@ -124,3 +124,27 @@ def detect_installer_candidates(files: list[DetectedFile]) -> list[InstallerCand
     candidates = [c for c in (_classify(f) for f in files) if c is not None]
     candidates.sort(key=lambda c: (c.rank, -c.file_size_bytes, c.path))
     return candidates
+
+
+def pick_confident_installer(
+    candidates: list[InstallerCandidate],
+) -> InstallerCandidate | None:
+    """The single candidate safe to start with automatically, or None.
+
+    Only a `RANK_KNOWN_INSTALLER` top match qualifies - a well-known
+    installer name (gog-*.exe, setup.exe, ...) is confident enough to run
+    without asking a human first, same threshold every client used to
+    decide this for itself (see e.g. the web UI's `startInstallAndNavigate`).
+    Centralized here so every client (web, CLI, ...) gets identical
+    auto-start behavior for free instead of re-implementing the heuristic -
+    the whole point of resolving this server-side.
+
+    Multiple same-rank candidates (e.g. several installer versions sitting
+    side by side) are not treated as ambiguous: `detect_installer_candidates`
+    already breaks the tie deterministically (biggest first, then path), so
+    the top entry is picked exactly like a human clicking the first, largest
+    option would.
+    """
+    if candidates and candidates[0].rank == RANK_KNOWN_INSTALLER:
+        return candidates[0]
+    return None

@@ -121,6 +121,12 @@ class InstallSessionSchema(BaseModel):
     error: str | None = None
     created_at: UTCDatetime
     updated_at: UTCDatetime
+    # Set only while state is AWAITING_INSTALLER: no client (any of them, not
+    # just this one) could confidently auto-pick an installer, so a human has
+    # to - this is where. "Manual mode", as opposed to a not-yet-built "auto
+    # mode" (e.g. OCR-driven) that could someday click through it unattended.
+    # Not a DB column - filled in by the endpoint, not from_attributes.
+    manual_install_url: str | None = None
 
 
 class InstallDashboardEntrySchema(BaseModel):
@@ -140,7 +146,10 @@ class InstallDashboardSchema(BaseModel):
 
 class InstallStreamFileSchema(BaseModel):
     """One file's live delivery state - how much exists, how much of that
-    is hash-verified and safe to download, and whether it's actually done."""
+    is safe to download right now, and whether it's actually done (see
+    handler.install.manifest.scan_live_manifest for what "safe" means here -
+    a stable-for-one-scan prefix, not a hash-verified one; the install's
+    own single whole-file sha1 is what actually gets verified, once)."""
 
     path: str
     size_bytes: int
