@@ -180,7 +180,6 @@
   "install-proton-no-installs": "まだProtonビルドがインストールされていません。開始するには以下からダウンロードしてください。",
   "install-proton-not-installed": "未インストール",
   "install-proton-version": "Protonのバージョン",
-  "install-reinstall": "再インストール",
   "install-select-file": "インストーラーファイル",
   "install-snackbar-abort-failed": "インストールを中止できませんでした: {detail}",
   "install-snackbar-aborted": "インストールを中止しました",

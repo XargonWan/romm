@@ -18,3 +18,4 @@ export type InstallSettingsPayload = {
     download_speed_limit_bytes_per_sec?: (number | null);
     default_proton_build?: (string | null);
 };
+

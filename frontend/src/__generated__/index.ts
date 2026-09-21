@@ -146,6 +146,8 @@ export type { PlaySessionIngestResult } from './models/PlaySessionIngestResult';
 export type { PlaySessionSchema } from './models/PlaySessionSchema';
 export type { ProtonBuildSchema } from './models/ProtonBuildSchema';
 export type { ProtonBuildsSchema } from './models/ProtonBuildsSchema';
+export type { ProtonDownloadProgressSchema } from './models/ProtonDownloadProgressSchema';
+export type { ProtonDownloadResponseSchema } from './models/ProtonDownloadResponseSchema';
 export type { RAGameRomAchievement } from './models/RAGameRomAchievement';
 export type { RAProgression } from './models/RAProgression';
 export type { RAUserGameProgression } from './models/RAUserGameProgression';

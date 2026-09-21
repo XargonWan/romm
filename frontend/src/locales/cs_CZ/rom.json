@@ -180,7 +180,6 @@
   "install-proton-no-installs": "Zatím nejsou nainstalována žádná sestavení Proton. Stáhněte si jedno níže a začněte.",
   "install-proton-not-installed": "Nenainstalováno",
   "install-proton-version": "Verze Proton",
-  "install-reinstall": "Přeinstalovat",
   "install-select-file": "Soubor instalátoru",
   "install-snackbar-abort-failed": "Nepodařilo se přerušit instalaci: {detail}",
   "install-snackbar-aborted": "Instalace byla přerušena",

@@ -42,3 +42,4 @@ export type ConfigResponse = {
     INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC: (number | null);
     INSTALL_DEFAULT_PROTON_BUILD: (string | null);
 };
+

@@ -180,7 +180,6 @@
   "install-proton-no-installs": "Még nincs telepítve Proton build. Töltsön le egyet alább a kezdéshez.",
   "install-proton-not-installed": "Nincs telepítve",
   "install-proton-version": "Proton verzió",
-  "install-reinstall": "Újratelepítés",
   "install-select-file": "Telepítőfájl",
   "install-snackbar-abort-failed": "Nem sikerült megszakítani a telepítést: {detail}",
   "install-snackbar-aborted": "A telepítés megszakítva",

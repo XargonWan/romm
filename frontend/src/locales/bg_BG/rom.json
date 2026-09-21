@@ -180,7 +180,6 @@
   "install-proton-no-installs": "Все още няма инсталирани версии на Proton. Изтеглете някоя по-долу, за да започнете.",
   "install-proton-not-installed": "Не е инсталирана",
   "install-proton-version": "Версия на Proton",
-  "install-reinstall": "Преинсталиране",
   "install-select-file": "Файл на инсталатора",
   "install-snackbar-abort-failed": "Неуспешно прекратяване на инсталацията: {detail}",
   "install-snackbar-aborted": "Инсталацията е прекратена",

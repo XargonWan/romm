@@ -17,5 +17,6 @@ export type InstallSessionSchema = {
     error?: (string | null);
     created_at: string;
     updated_at: string;
+    manual_install_url?: (string | null);
 };
 

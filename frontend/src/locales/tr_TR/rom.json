@@ -180,7 +180,6 @@
   "install-proton-no-installs": "Henüz hiçbir Proton sürümü yüklenmedi. Başlamak için aşağıdan birini indirin.",
   "install-proton-not-installed": "Yüklü değil",
   "install-proton-version": "Proton sürümü",
-  "install-reinstall": "Yeniden yükle",
   "install-select-file": "Yükleyici dosyası",
   "install-snackbar-abort-failed": "Yükleme durdurulamadı: {detail}",
   "install-snackbar-aborted": "Yükleme durduruldu",

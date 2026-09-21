@@ -72,7 +72,7 @@ Polled regardless of session state - while the install is running this reflects 
 
 **Once a file is `complete`**, this behaves exactly like the plain `/{id}/install/files/{path}` download - normal whole-file semantics, standard Range support.
 
-**While a file is still being written**, requests are served against the growing file, but only up to `sealed_bytes` - the point at which the backend has confirmed the bytes are stable (won't be rewritten) and hashed them. This is the entire resumability story, and it's deliberately just standard HTTP:
+**While a file is still being written**, requests are served against the growing file, but only up to `sealed_bytes` - the point at which the backend has seen the size hold steady for one scan interval, so it isn't about to be rewritten out from under a reader (no hashing is done at this stage - see §4 for where integrity is actually checked). This is the entire resumability story, and it's deliberately just standard HTTP:
 
 - Send a normal `Range: bytes=<start>-` (or `<start>-<end>`) request.
 - If any of the requested range falls within `[0, sealed_bytes)`, you get `206 Partial Content` with `Content-Range: bytes <start>-<end>/*` (the `*` because the final total size isn't known yet) and exactly that many bytes.
@@ -97,3 +97,32 @@ Polled regardless of session state - while the install is running this reflects 
 | GET    | `/{id}/install/files/{file_path}` | ROMS_INSTALL | Download one finished file (exact manifest path match) |
 
 These 404 until the session reaches `done` - a session that `failed` never produces a manifest here.
+
+## 6. Example CLI client
+
+`cli/romm-install-cli.py` is a minimal, pure-stdlib (no third-party dependencies) command-line client that drives the whole flow described above. It's intended as a quick way to exercise the stream-install feature by hand, and as a reference implementation for the API. Run it with no flags first to see all options:
+
+```bash
+python cli/romm-install-cli.py --help
+```
+
+A typical end-to-end run from a terminal pointed at a local RomM instance:
+
+```bash
+python cli/romm-install-cli.py \
+    --base http://localhost:5100 \
+    --user admin --pass admin \
+    --rom-id 123 \
+    --out /tmp/romm-install
+```
+
+What it does (and how it maps to this document):
+
+1. Logs in over HTTP Basic and captures the session cookie.
+2. If a session for this ROM is already `done`, skips straight to streaming - the server re-serves the cached install immediately.
+3. Otherwise it checks the worker is connected (`GET /install/worker-status`), prints the detected installer candidates (`GET /{id}/install/candidates`), and starts the session (`POST /{id}/install`). Omit `--installer-path` to let the server auto-pick; pass it only to override.
+4. If the server can't confidently auto-pick an installer, the session comes back `awaiting_installer` (the "manual mode" branch): the CLI prints `manual_install_url` and exits. Open that URL to finish the install in the browser-based VNC session, then re-run the same command to stream the result.
+5. While polling the session state (`GET /{id}/install`), it concurrently streams files (`GET /{id}/install/stream/manifest` and Range `GET /{id}/install/stream/{path}`) into `--out/<game name>/` - so it can start pulling bytes before the install finishes, which is the point of stream install.
+6. Supports a few extra one-off operations: `--cancel` to abort a session, `--clear` to wipe its cache, `--list-proton`/`--download-proton` to inspect and pull Proton builds. See `--help` for the full set.
+
+Pass `--no-download` to start and poll a session without streaming files. The CLI assumes the RomM instance already exposes the install endpoints; it does not stand up the sandbox container or worker itself.

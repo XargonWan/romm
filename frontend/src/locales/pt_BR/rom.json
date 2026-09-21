@@ -180,7 +180,6 @@
   "install-proton-no-installs": "Nenhuma build do Proton foi instalada ainda. Baixe uma abaixo para começar.",
   "install-proton-not-installed": "Não instalado",
   "install-proton-version": "Versão do Proton",
-  "install-reinstall": "Reinstalar",
   "install-select-file": "Arquivo do instalador",
   "install-snackbar-abort-failed": "Falha ao interromper a instalação: {detail}",
   "install-snackbar-aborted": "Instalação interrompida",
