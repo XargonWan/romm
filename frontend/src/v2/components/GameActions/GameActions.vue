@@ -45,9 +45,11 @@ const actions = useGameActions(() => romRef.value);
 // DownloadOrInstallDialog) instead of getting a separate ribbon button.
 // InstallButton only replaces Download while a session is actively running
 // (progress + Abort) - Download must never disappear outright, so a
-// finished/failed session still goes through the same picker dialog, just
-// with its second choice reading "Reinstall". Non-Windows ROMs never touch
-// any of this - Download behaves exactly as it always has.
+// finished/failed session still goes through the same picker dialog too;
+// "Install" always installs, offering to clear an existing cache first
+// rather than becoming a separate "Reinstall" (see
+// confirmClearIfInstalled). Non-Windows ROMs never touch any of this -
+// Download behaves exactly as it always has.
 const isWindowsRom = computed(() => isWindowsInstallableRom(props.rom));
 const install = useInstallSession(() => romRef.value);
 onMounted(() => {
@@ -75,8 +77,11 @@ function chooseDownload() {
   showDownloadOrInstall.value = false;
   actions.download();
 }
-function chooseInstall() {
+async function chooseInstall() {
   showDownloadOrInstall.value = false;
+  // A no-op unless a cache already exists for this ROM - see the
+  // composable's own docstring. Always proceeds to install either way.
+  await install.confirmClearIfInstalled();
   startInstallAndNavigate(romRef.value, router);
 }
 
@@ -191,7 +196,6 @@ useGridNav(rootEl, {
     <DownloadOrInstallDialog
       v-if="isWindowsRom"
       v-model="showDownloadOrInstall"
-      :is-reinstall="install.hasCache.value"
       @download="chooseDownload"
       @install="chooseInstall"
     />

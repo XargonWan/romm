@@ -185,7 +185,10 @@ function downloadSelectedProton() {
   }
 }
 
-function startInstall() {
+async function startInstall() {
+  // A no-op unless a cache already exists for this ROM - see the
+  // composable's own docstring. Always proceeds to install either way.
+  await install.confirmClearIfInstalled();
   install.startWithPath(
     selectedInstallerPath.value ?? undefined,
     selectedProtonBuild.value ?? undefined,
@@ -236,9 +239,10 @@ const pendingLabel = computed(() => {
   }
 });
 
-const startCtaLabel = computed(() =>
-  install.hasCache.value ? t("rom.install-reinstall") : t("rom.install"),
-);
+// One label, always - no separate "Reinstall" state. Pressing Install on an
+// already-installed ROM offers to clear the old cache first (see
+// confirmClearIfInstalled) rather than silently relabeling the button.
+const startCtaLabel = computed(() => t("rom.install"));
 
 function backToRom() {
   router.push({ name: ROUTES.ROM, params: { rom: rom.value?.id } });
@@ -266,7 +270,17 @@ const platformLabel = computed(
 // showing both - fine for a plain submit button, but this one needs to stay
 // readable (and clickable, as Abort) for the whole (multi-minute) run, so
 // the sidebar button builds its own spinner+label instead of using `loading`.
-const isBusy = computed(() => install.isActive.value || install.starting.value);
+//
+// Deliberately excludes awaitingInstallerPick: a session parked there is
+// "manual mode" (server-side auto-pick found nothing confident - see
+// start_install_session's own docstring) - the picker and "Install" CTA
+// must stay usable, not get locked out behind a perpetual "Abort" button
+// and a disabled combo.
+const isBusy = computed(
+  () =>
+    (install.isActive.value && !install.awaitingInstallerPick.value) ||
+    install.starting.value,
+);
 
 const downloadSpeedLimitLabel = computed(() =>
   downloadSpeedLimitBytesPerSec.value
@@ -296,7 +310,7 @@ const downloadSpeedLimitLabel = computed(() =>
            or no session exists yet because the worker is still booting and
            the start request is being retried (see waitingForWorker). -->
       <div
-        v-else-if="install.isActive.value || install.waitingForWorker.value"
+        v-else-if="isBusy || install.waitingForWorker.value"
         class="r-v2-install__pending"
       >
         <div class="r-v2-install__spinner" aria-hidden="true" />
@@ -379,7 +393,7 @@ const downloadSpeedLimitLabel = computed(() =>
           density="comfortable"
           prepend-inner-icon="mdi-file-outline"
           hide-details
-          :disabled="install.isActive.value"
+          :disabled="isBusy"
           :label="t('rom.install-select-file')"
           :items="installerItems"
         />
@@ -391,7 +405,7 @@ const downloadSpeedLimitLabel = computed(() =>
           density="comfortable"
           prepend-inner-icon="mdi-package-variant-closed"
           hide-details
-          :disabled="install.isActive.value"
+          :disabled="isBusy"
           :label="t('rom.install-proton-version')"
           :items="protonItems"
         />
@@ -404,7 +418,7 @@ const downloadSpeedLimitLabel = computed(() =>
           variant="outlined"
           size="small"
           :loading="Object.keys(install.downloadingBuilds.value).length > 0"
-          :disabled="install.isActive.value || install.starting.value"
+          :disabled="isBusy"
           prepend-icon="mdi-download-outline"
           class="r-v2-install__proton-download"
           @click="downloadSelectedProton"

@@ -7,10 +7,6 @@ import { useI18n } from "vue-i18n";
 
 defineProps<{
   modelValue: boolean;
-  // True once a previous install session already exists for this ROM - the
-  // second choice reads "Reinstall" instead of "Install" (same action,
-  // `startInstallAndNavigate` starts a fresh session either way).
-  isReinstall?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -56,9 +52,7 @@ function close() {
         >
           <RIcon icon="mdi-download-box-outline" size="22" />
           <span class="download-or-install__choice-text">
-            <strong>{{
-              t(isReinstall ? "rom.install-reinstall" : "rom.install")
-            }}</strong>
+            <strong>{{ t("rom.install") }}</strong>
             <small>{{ t("rom.download-or-install-install-hint") }}</small>
           </span>
         </button>

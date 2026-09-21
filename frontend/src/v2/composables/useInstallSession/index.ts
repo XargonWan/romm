@@ -40,16 +40,15 @@ export type ProtonBuildExtended = ProtonBuildSchema & {
   size_bytes?: number | null;
 };
 
-// A candidate at this rank was matched by a well-known installer file name
-// (gog-*.exe, setup.exe, ...) — confident enough to start without asking.
-// Kept in sync with RANK_KNOWN_INSTALLER in
-// backend/handler/filesystem/installer_detection.py.
-const RANK_KNOWN_INSTALLER = 0;
-
 const RUNNING_STATES: InstallSessionState[] = ["installing", "streaming"];
-const ACTIVE_STATES: InstallSessionState[] = [
+// A session parked here never actually ran anything yet - it's still
+// waiting on the client to supply (or auto-pick) an installer path.
+const AWAITING_PICK_STATES: InstallSessionState[] = [
   "detecting",
   "awaiting_installer",
+];
+const ACTIVE_STATES: InstallSessionState[] = [
+  ...AWAITING_PICK_STATES,
   ...RUNNING_STATES,
 ];
 
@@ -156,11 +155,30 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
   const isActive = computed(
     () => !!state.value && ACTIVE_STATES.includes(state.value),
   );
+  // True while the session is parked waiting on a human to pick/confirm an
+  // installer (server-side auto-pick found nothing confident enough - see
+  // start_install_session's own docstring on "manual mode"). The Install
+  // page keeps its picker/CTA usable in this state instead of locking them
+  // behind a permanent spinner+"Abort" the way a genuinely running session
+  // does.
+  const awaitingInstallerPick = computed(
+    () => !!state.value && AWAITING_PICK_STATES.includes(state.value),
+  );
   // "View install" only makes sense while the sandbox's VNC bridge is up.
   const vncUrl = computed(() =>
     state.value === "installing" ? session.value?.vnc_url : null,
   );
-  const hasCache = computed(() => !!session.value && !isRunning.value);
+  // Excludes AWAITING_PICK_STATES too, not just isRunning: a session parked
+  // there (e.g. one still waiting on an installer path) never produced any
+  // files, so it has nothing to "reinstall" from - only a session that
+  // actually ran (and finished, failed, or expired) does.
+  const hasCache = computed(
+    () =>
+      !!session.value &&
+      !isRunning.value &&
+      !!state.value &&
+      !AWAITING_PICK_STATES.includes(state.value),
+  );
 
   // While the worker is bootstrapping (downloading/installing the Proton
   // build before the VNC bridge comes up), poll its download progress so the
@@ -426,6 +444,37 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     }
   }
 
+  /** Offers to clear whatever cache already exists for this ROM right
+   *  before a fresh install starts - "Install" is the only button now (no
+   *  separate "Reinstall"), so this is where that choice actually
+   *  happens, once. A no-op when there's nothing to ask about
+   *  (`hasCache` false). Always resolves (never throws) and the caller
+   *  proceeds to install either way once this returns - clearing is
+   *  optional, not a gate: a fresh attempt starts whether the user clears
+   *  the old cache or keeps it, only the old cache's disk usage is at
+   *  stake either way. */
+  async function confirmClearIfInstalled(): Promise<void> {
+    const rom = getRom();
+    if (!rom || !hasCache.value) return;
+    const ok = await confirm({
+      title: t("rom.install-confirm-clear-title"),
+      body: t("rom.install-confirm-clear-body"),
+      confirmText: t("rom.install-clear-cache"),
+      tone: "danger",
+      requireTyped: "DELETE",
+    });
+    if (!ok) return;
+    try {
+      await installApi.clearInstallCache(rom.id);
+      session.value = null;
+    } catch (err) {
+      snackbar.error(
+        t("rom.install-snackbar-clear-failed", { detail: errorDetail(err) }),
+        { icon: "mdi-alert-circle-outline" },
+      );
+    }
+  }
+
   onBeforeUnmount(() => {
     stopped = true;
     stopPolling();
@@ -446,6 +495,7 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     state,
     isRunning,
     isActive,
+    awaitingInstallerPick,
     vncUrl,
     hasCache,
     protonDownloadProgress,
@@ -459,6 +509,7 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     downloadProtonBuild,
     startWithPath,
     cancelInstall,
+    confirmClearIfInstalled,
   };
 }
 
@@ -473,32 +524,21 @@ export type InstallSession = ReturnType<typeof useInstallSession>;
  *  that. The Install page's own useInstallSession instance picks up the
  *  resulting session via its normal checkExisting() polling.
  *
- *  Ambiguous ROMs (no confident single candidate) are left alone here - the
- *  Install page's own file-select combo (backed by checkCandidates) lets
- *  the user pick and press "Install" there instead. */
+ *  Deliberately just one call with no installer_path: the server resolves
+ *  everything itself now - already installed, an unambiguous auto-pick, or
+ *  falling back to AWAITING_INSTALLER for a human to finish on the Install
+ *  page (see start_install_session's own docstring) - so every client gets
+ *  identical behavior for free instead of re-fetching candidates and
+ *  picking one here too. */
 export async function startInstallAndNavigate(
   rom: SimpleRom,
   router: Router,
 ): Promise<void> {
   void router.push({ name: ROUTES.INSTALL, params: { rom: rom.id } });
   try {
-    // Retried as one unit (not just the final startInstall call): a worker
-    // that's still booting 503s on the candidates fetch just as readily -
-    // see withWorkerStartupRetry's own comment.
-    await withWorkerStartupRetry(async () => {
-      const { data } = await installApi.getInstallCandidates(rom.id);
-      if (data.stream_copy) {
-        await installApi.startInstall({ romId: rom.id });
-        return;
-      }
-      const top = data.candidates[0];
-      if (top && top.rank === RANK_KNOWN_INSTALLER) {
-        await installApi.startInstall({
-          romId: rom.id,
-          installerPath: top.path,
-        });
-      }
-    });
+    await withWorkerStartupRetry(() =>
+      installApi.startInstall({ romId: rom.id }),
+    );
   } catch {
     // Best-effort: the Install page's own checkExisting()/checkCandidates()
     // still give the user a way to see what happened and retry.
