@@ -18,6 +18,7 @@ This module runs in the RQ worker process, not the web process.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -38,6 +39,7 @@ from handler.install.manifest import (
     delete_live_manifest,
     hash_files,
     manifest_total_bytes,
+    read_live_manifest,
     scan_live_manifest,
     write_live_manifest,
     write_manifest,
@@ -428,16 +430,34 @@ def run_install(install_session_id: int) -> None:
                 daemon=True,
             )
             live_manifest_thread.start()
+        timed_out = False
         try:
             _run_installer(argv, vnc.display)
+        except subprocess.TimeoutExpired:
+            timed_out = True
         finally:
             stop_live_manifest.set()
             if live_manifest_thread is not None:
                 live_manifest_thread.join(timeout=2)
 
-        # Installer exited: it's done writing, VNC is no longer needed. Move
-        # to STREAMING while we hash the output so clients see it as "still
-        # working" rather than DONE early.
+        if timed_out and not _install_output_looks_finished(work_dir):
+            # Genuinely stuck (something was still mid-write, or nothing
+            # was ever produced) - not safe to trust as a finished install.
+            _fail(install_session_id, "Installer timed out")
+            return
+        if timed_out:
+            log.warning(
+                f"Install session {install_session_id} hit its timeout, but "
+                "every discovered file looks finished and stable - most "
+                "likely the installer reached its own final dialog (e.g. "
+                "\"Finish\") and nobody was there to click it. Salvaging "
+                "the install instead of discarding it."
+            )
+
+        # Installer exited (or timed out but looks done): it's done
+        # writing, VNC is no longer needed. Move to STREAMING while we hash
+        # the output so clients see it as "still working" rather than DONE
+        # early.
         db_install_session_handler.update_session(
             install_session_id,
             {
@@ -452,8 +472,6 @@ def run_install(install_session_id: int) -> None:
             work_dir,
             windows_baseline,
         )
-    except subprocess.TimeoutExpired:
-        _fail(install_session_id, "Installer timed out")
     except Exception as e:  # noqa: BLE001 - surface any runner failure to the UI
         log.error(f"Install session {install_session_id} failed: {e}")
         _fail(install_session_id, str(e))
@@ -482,6 +500,32 @@ def _files_under(files: list[Path], root: Path) -> list[Path]:
     return kept
 
 
+def _relocate_under(files: list[Path], root: Path, dest_root: Path) -> list[Path]:
+    """Move each file from its real, `root`-relative location up to the same
+    relative path under `dest_root`.
+
+    The installer's actual output lives several levels deep inside the Wine
+    prefix (``prefix/pfx/drive_c/...``), but every manifest path - and the
+    download endpoint that serves it - is relative to the session's own
+    cache directory (see ``handler.install.manifest``'s module docstring).
+    Trimming the vendor folder off the *recorded* path (``resolve_install_root``)
+    without also moving the *file* itself would leave the manifest pointing
+    at a path that was never real on disk - exactly what it's for here.
+    ``shutil.move`` is a same-filesystem rename in the common case (cheap,
+    and safe even on a file the installer is still writing to - the process
+    keeps its already-open handle on the same inode regardless of which
+    directory entry points to it), falling back to copy+delete only if
+    ``dest_root`` ever ends up on a different filesystem.
+    """
+    relocated = []
+    for f in files:
+        dest = dest_root / f.relative_to(root)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(f), str(dest))
+        relocated.append(dest)
+    return relocated
+
+
 def _live_manifest_loop(
     work_dir: Path,
     prefix_dir: Path,
@@ -492,7 +536,20 @@ def _live_manifest_loop(
     can start pulling finished pieces of a file before the whole install (and
     its real, fully-verified manifest) is done - see
     handler.install.manifest.scan_live_manifest for the sealing rule this
-    relies on to never hand out a chunk that might still change."""
+    relies on to never hand out a chunk that might still change.
+
+    Every path this writes is relative to `work_dir` - the same directory
+    the download endpoint resolves against (see handler.install.manifest's
+    own module docstring) - never wherever Wine/Proton actually put the
+    file (several levels deep inside the prefix). A newly-discovered file
+    is hardlinked into `work_dir` (mirroring the resolved root's relative
+    layout) the moment it's seen, not copied or moved: the installer keeps
+    writing to the same inode no matter which directory entries point to
+    it, so the file keeps growing live at both paths at once, and
+    `_finalize_install`'s own separate, move-based relocation pass still
+    finds the original completely undisturbed under `prefix_dir` once the
+    installer exits - this loop never removes anything.
+    """
     drive_c = prefix_dir / "drive_c"
     state: dict[str, LiveManifestEntry] = {}
     # Resolved once, the first scan that finds anything, then held fixed for
@@ -506,7 +563,18 @@ def _live_manifest_loop(
             if root is None and candidates:
                 root = resolve_install_root(drive_c, candidates)
             if root is not None:
-                state = scan_live_manifest(root, _files_under(candidates, root), state)
+                live_paths = []
+                for f in _files_under(candidates, root):
+                    dest = work_dir / f.relative_to(root)
+                    if not dest.exists():
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            os.link(f, dest)
+                        except OSError:
+                            continue  # transient (e.g. not sealed onto disk
+                            # yet) - retry next scan
+                    live_paths.append(dest)
+                state = scan_live_manifest(work_dir, live_paths, state)
                 write_live_manifest(work_dir, state)
         except OSError as e:
             log.warning(f"Live manifest scan failed, will retry: {e}")
@@ -537,13 +605,18 @@ def _finalize_install(
     # only ever runs once (see resolve_install_root).
     root = resolve_install_root(prefix_dir / "drive_c", files)
     files = _files_under(files, root)
+    # Move the discovered files out of the Wine prefix and up to `work_dir`
+    # itself, mirroring the same (already vendor-folder-trimmed) relative
+    # layout - see _relocate_under's own docstring for why this has to
+    # happen, not just be recorded.
+    files = _relocate_under(files, root, work_dir)
 
     report = ThrottledProgress(
         lambda hashed: db_install_session_handler.update_session(
             install_session_id, {"bytes_written": hashed}
         )
     )
-    entries = hash_files(files, root=root, on_progress=report)
+    entries = hash_files(files, root=work_dir, on_progress=report)
     report.finish(manifest_total_bytes(entries))
     write_manifest(work_dir, entries)
 
@@ -625,6 +698,39 @@ def _run_installer(argv: list[str], display: str) -> None:
     finally:
         stop_focus_loop.set()
         focus_thread.join(timeout=2)
+
+
+def _install_output_looks_finished(work_dir: Path) -> bool:
+    """Best-effort check for "the installer most likely already reached its
+    own end, and was just sitting on a final dialog (a 'Finish' button, an
+    auto-launched game, ...) nobody clicked/closed" - used only as a
+    fallback once the hard INSTALL_TIMEOUT has already fired (see
+    run_install), to decide whether to salvage whatever is on disk as a
+    finished install instead of unconditionally discarding it.
+
+    Caught live: an install (see the runner.py log entry for the full
+    story) whose actual file output - all 436 files, including the
+    uninstaller InnoSetup writes as its literal last step - finished within
+    two minutes, but the sandbox process itself sat idle for the rest of
+    the hour-long timeout because nobody was watching to click the
+    installer's own final "Finish" button. The old behavior discarded a
+    fully complete, correctly-written install as a plain failure.
+
+    True only if the live manifest already being tracked (see
+    _live_manifest_loop) has at least one entry, and every one of them is
+    fully sealed - its size hasn't changed since the loop's last scan,
+    `LIVE_MANIFEST_INTERVAL` seconds before the timeout fired. A genuinely
+    still-in-progress (or truly stuck) install almost always has something
+    mid-write at that exact instant; one that's actually finished has
+    nothing left to grow into. This is a much weaker signal in isolation
+    than it is here: it only ever gets consulted after the full, real
+    `INSTALL_TIMEOUT` has already elapsed with the process never exiting on
+    its own, which is most of what makes it trustworthy.
+    """
+    live = read_live_manifest(work_dir)
+    if not live:
+        return False
+    return all(e.sealed_bytes >= e.size_bytes for e in live.values())
 
 
 @dataclass

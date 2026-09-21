@@ -158,43 +158,14 @@ def find_manifest_entry(
 
 
 @dataclass(frozen=True, slots=True)
-class ChunkEntry:
-    """One hashed, sealed CHUNK_SIZE-sized piece of a still-growing file."""
-
-    index: int
-    sha1: str
-
-
-@dataclass(frozen=True, slots=True)
 class LiveManifestEntry:
     """One file's live state: how much of it exists, how much of that is
-    hash-verified and safe to serve, and whether it's actually finished."""
+    safe to serve right now, and whether it's actually finished."""
 
     path: str
     size_bytes: int  # current on-disk size; grows over time
-    sealed_bytes: int  # highest offset that is hash-verified and servable
-    chunks: tuple[ChunkEntry, ...]
+    sealed_bytes: int  # prefix safe to serve right now (see scan_live_manifest)
     complete: bool  # true once the whole file is confirmed final
-
-
-def _sealable_chunk_count(size_bytes: int) -> int:
-    """How many whole CHUNK_SIZE pieces are fully covered by `size_bytes`."""
-    return size_bytes // CHUNK_SIZE
-
-
-def _hash_range(path: Path, start: int, length: int) -> str:
-    """Stream-hash exactly `length` bytes starting at `start`."""
-    digest = hashlib.sha1()
-    with path.open("rb") as f:
-        f.seek(start)
-        remaining = length
-        while remaining > 0:
-            chunk = f.read(min(remaining, CHUNK_SIZE))
-            if not chunk:
-                break
-            digest.update(chunk)
-            remaining -= len(chunk)
-    return digest.hexdigest()
 
 
 def scan_live_manifest(
@@ -204,12 +175,23 @@ def scan_live_manifest(
 ) -> dict[str, LiveManifestEntry]:
     """One incremental pass over the installer's in-progress output.
 
-    A chunk only becomes sealed (hashed, safe to serve) once its size
-    threshold has already held for one full scan interval - comparing this
-    scan's coverage against `previous`'s recorded size is the two-scan
-    confirmation, cheap protection against hashing bytes the installer might
-    still be actively writing into. A sealed chunk is never re-hashed; a
-    later call carries it forward from `previous` unchanged.
+    `sealed_bytes` is the prefix of the file a client may safely read right
+    now: whatever was already there on the *previous* scan (one interval of
+    "this isn't still being rewritten" confirmation), or the file's entire
+    current size once it's stopped growing between two consecutive scans -
+    at that point there's nothing left it could still be mutating. That
+    second case matters more than it looks: an earlier version of this only
+    ever sealed whole `CHUNK_SIZE` pieces, so a file (or a file's trailing
+    remainder) smaller than one `CHUNK_SIZE` could reach 100% written and
+    just sit there permanently unstreamable - never a `CHUNK_SIZE` multiple,
+    so never eligible. Deliberately no longer hashes anything here: nothing
+    downstream ever reads a per-chunk hash (the finished install's own
+    single whole-file sha1 - see `hash_files` - is what actually gets
+    verified), so computing one on every scan of every growing file was
+    pure overhead for a guarantee nobody was checking.
+
+    `sealed_bytes` never regresses call-to-call, even if a size read is
+    momentarily inconsistent with the last one.
     """
     previous = previous or {}
     result: dict[str, LiveManifestEntry] = {}
@@ -221,22 +203,19 @@ def scan_live_manifest(
 
         rel_path = path.relative_to(root).as_posix()
         prior = previous.get(rel_path)
-        sealed_chunks: list[ChunkEntry] = list(prior.chunks) if prior else []
-
-        # Only seal up to what was ALREADY sealable on the previous scan -
-        # a chunk that just became coverable this scan waits one more
-        # interval before it's trusted not to change further.
-        prior_sealable = _sealable_chunk_count(prior.size_bytes) if prior else 0
-        while len(sealed_chunks) < prior_sealable:
-            index = len(sealed_chunks)
-            sha1 = _hash_range(path, index * CHUNK_SIZE, CHUNK_SIZE)
-            sealed_chunks.append(ChunkEntry(index=index, sha1=sha1))
+        if prior is None:
+            sealed_bytes = 0
+        elif prior.size_bytes == size:
+            sealed_bytes = size
+        else:
+            sealed_bytes = min(prior.size_bytes, size)
+        if prior is not None:
+            sealed_bytes = max(sealed_bytes, prior.sealed_bytes)
 
         result[rel_path] = LiveManifestEntry(
             path=rel_path,
             size_bytes=size,
-            sealed_bytes=len(sealed_chunks) * CHUNK_SIZE,
-            chunks=tuple(sealed_chunks),
+            sealed_bytes=sealed_bytes,
             complete=False,
         )
     return result
@@ -252,7 +231,6 @@ def live_view_of_final_manifest(
             path=e.path,
             size_bytes=e.size_bytes,
             sealed_bytes=e.size_bytes,
-            chunks=(),  # already whole-file verified; no per-chunk hashes needed
             complete=True,
         )
         for e in entries
@@ -272,7 +250,6 @@ def write_live_manifest(
                 "size_bytes": e.size_bytes,
                 "sealed_bytes": e.sealed_bytes,
                 "complete": e.complete,
-                "chunks": [asdict(c) for c in e.chunks],
             }
             for e in entries.values()
         ]
@@ -295,12 +272,10 @@ def read_live_manifest(cache_dir: Path) -> dict[str, LiveManifestEntry] | None:
 
     entries: dict[str, LiveManifestEntry] = {}
     for f in payload.get("files", []):
-        chunks = tuple(ChunkEntry(**c) for c in f.get("chunks", []))
         entries[f["path"]] = LiveManifestEntry(
             path=f["path"],
             size_bytes=f["size_bytes"],
             sealed_bytes=f["sealed_bytes"],
-            chunks=chunks,
             complete=f.get("complete", False),
         )
     return entries
