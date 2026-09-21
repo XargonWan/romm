@@ -8,14 +8,15 @@ from tests.endpoints.test_music import _auth  # noqa: F401
 
 import endpoints.roms.install as install_module
 import utils.install_cache as install_cache
+from config import ROMM_BASE_URL
 from handler.database import (
     db_install_session_handler,
     db_platform_handler,
     db_rom_handler,
 )
+from handler.filesystem.installer_detection import InstallerCandidate
 from handler.install import bandwidth, stream_presence
 from handler.install.manifest import (
-    ChunkEntry,
     LiveManifestEntry,
     build_manifest,
     write_live_manifest,
@@ -128,16 +129,87 @@ class TestStartInstallSession:
         assert r.json()["state"] == InstallSessionState.STREAMING.value
         mock_enqueue.assert_called_once()
 
-    def test_windows_rom_without_installer_path_stays_detecting(
+    def test_windows_rom_without_installer_path_awaits_manual_pick(
         self, client: TestClient, access_token: str, win_rom: Rom
     ):
         # No worker mocked: this returns before that check even runs (nothing
-        # to enqueue yet without a chosen installer).
+        # to enqueue yet). win_rom has no real files on disk, so auto-pick
+        # (pick_confident_installer) finds nothing confident either - a
+        # human has to choose, hence AWAITING_INSTALLER with a URL to send
+        # them to (see manual_install_url's own docstring).
         r = client.post(
             f"/api/roms/{win_rom.id}/install", json={}, headers=_auth(access_token)
         )
         assert r.status_code == status.HTTP_200_OK
-        assert r.json()["state"] == InstallSessionState.DETECTING.value
+        body = r.json()
+        assert body["state"] == InstallSessionState.AWAITING_INSTALLER.value
+        assert body["manual_install_url"] == f"{ROMM_BASE_URL}/rom/{win_rom.id}/install"
+
+    def test_windows_rom_auto_picks_a_confident_installer(
+        self, client: TestClient, access_token: str, win_rom: Rom
+    ):
+        # The server resolves the installer itself - same threshold the web
+        # UI used to apply client-side (see pick_confident_installer) - so no
+        # client has to fetch candidates and pick one just to start.
+        candidate = InstallerCandidate(
+            path="setup.exe",
+            file_name="setup.exe",
+            file_size_bytes=123,
+            rank=0,
+            kind="known installer",
+        )
+        with (
+            patch(
+                "endpoints.roms.install.fs_rom_handler.get_installer_candidates",
+                return_value=[candidate],
+            ),
+            patch("endpoints.roms.install.has_install_worker", return_value=True),
+            patch(
+                "endpoints.roms.install.enqueue_install", return_value="job-999"
+            ) as mock_enqueue,
+        ):
+            r = client.post(
+                f"/api/roms/{win_rom.id}/install", json={}, headers=_auth(access_token)
+            )
+        assert r.status_code == status.HTTP_200_OK
+        body = r.json()
+        assert body["state"] == InstallSessionState.INSTALLING.value
+        assert body["installer_path"] == "setup.exe"
+        mock_enqueue.assert_called_once()
+
+    def test_already_done_session_does_not_block_a_fresh_install(
+        self, client: TestClient, access_token: str, win_rom: Rom, admin_user: User
+    ):
+        # There's no separate "Reinstall" concept - pressing Install always
+        # starts a genuinely new attempt, even over an existing DONE
+        # session (a client that wants "already installed, just stream it,
+        # don't touch anything" - the CLI's own default - checks
+        # GET /{id}/install itself first and never reaches this POST at all;
+        # see start_install_session's own docstring).
+        done = db_install_session_handler.add_session(
+            InstallSession(
+                rom_id=win_rom.id,
+                user_id=admin_user.id,
+                state=InstallSessionState.DONE,
+                installer_path="setup.exe",
+            )
+        )
+        with (
+            patch("endpoints.roms.install.has_install_worker", return_value=True),
+            patch(
+                "endpoints.roms.install.enqueue_install", return_value="job-fresh"
+            ) as mock_enqueue,
+        ):
+            r = client.post(
+                f"/api/roms/{win_rom.id}/install",
+                json={"installer_path": "setup.exe"},
+                headers=_auth(access_token),
+            )
+        assert r.status_code == status.HTTP_200_OK
+        body = r.json()
+        assert body["id"] != done.id
+        assert body["state"] == InstallSessionState.INSTALLING.value
+        mock_enqueue.assert_called_once()
 
     def test_windows_rom_with_installer_path_enqueues(
         self, client: TestClient, access_token: str, win_rom: Rom
@@ -186,6 +258,36 @@ class TestStartInstallSession:
             f"/api/roms/{win_rom.id}/install", json={}, headers=_auth(access_token)
         ).json()
         assert first["id"] == second["id"]
+
+    def test_installer_path_resumes_a_stuck_awaiting_session(
+        self, client: TestClient, access_token: str, win_rom: Rom
+    ):
+        # Regression guard: a session left in AWAITING_INSTALLER (auto-pick
+        # found nothing confident) must not be stuck there forever - a later
+        # request that finally supplies a path has to update and enqueue it,
+        # not just hand back the same never-enqueued session again (the
+        # "reuse" short-circuit is only for calls that bring nothing new).
+        stuck = client.post(
+            f"/api/roms/{win_rom.id}/install", json={}, headers=_auth(access_token)
+        ).json()
+        assert stuck["state"] == InstallSessionState.AWAITING_INSTALLER.value
+        assert stuck["installer_path"] is None
+
+        with (
+            patch("endpoints.roms.install.has_install_worker", return_value=True),
+            patch(
+                "endpoints.roms.install.enqueue_install", return_value="job-789"
+            ) as mock_enqueue,
+        ):
+            resumed = client.post(
+                f"/api/roms/{win_rom.id}/install",
+                json={"installer_path": "setup.exe"},
+                headers=_auth(access_token),
+            ).json()
+        assert resumed["id"] == stuck["id"]
+        assert resumed["state"] == InstallSessionState.INSTALLING.value
+        assert resumed["installer_path"] == "setup.exe"
+        mock_enqueue.assert_called_once()
 
     def test_concurrency_limit_rejects_and_cleans_up_session(
         self,
@@ -636,7 +738,6 @@ class TestGetInstallStreamManifest:
                     path="game.exe",
                     size_bytes=20,
                     sealed_bytes=8,
-                    chunks=(ChunkEntry(index=0, sha1="a"), ChunkEntry(index=1, sha1="b")),
                     complete=False,
                 )
             },
@@ -773,8 +874,7 @@ class TestDownloadInstallStreamFile:
                 "game.exe": LiveManifestEntry(
                     path="game.exe",
                     size_bytes=16,
-                    sealed_bytes=8,  # only the first 8 bytes are hash-verified
-                    chunks=(),
+                    sealed_bytes=8,  # only the first 8 bytes are safe to read
                     complete=False,
                 )
             },
@@ -812,7 +912,6 @@ class TestDownloadInstallStreamFile:
                     path="game.exe",
                     size_bytes=16,
                     sealed_bytes=8,
-                    chunks=(),
                     complete=False,
                 )
             },

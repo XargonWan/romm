@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import handler.install.runner as runner
+from handler.install.manifest import LiveManifestEntry
 
 
 class TestUsesWine:
@@ -667,3 +668,249 @@ class TestRunInstaller:
 
         assert fake.killed is True
         assert fake.wait_calls == 2
+
+
+class TestInstallOutputLooksFinished:
+    """Regression coverage for a real bug: an install whose actual file
+    output was 100% complete (all 436 files, including the uninstaller
+    InnoSetup writes as its literal last step) got discarded as a plain
+    failure because the sandbox process itself never exited within the
+    hour-long INSTALL_TIMEOUT - almost certainly because nobody was
+    watching to click the installer's own final "Finish" dialog. See
+    run_install's own use of this function for where the salvage
+    decision actually happens."""
+
+    def test_true_when_every_tracked_file_is_fully_sealed(self, tmp_path):
+        from handler.install.manifest import write_live_manifest
+
+        write_live_manifest(
+            tmp_path,
+            {
+                "a.exe": LiveManifestEntry(
+                    path="a.exe", size_bytes=100, sealed_bytes=100, complete=False
+                ),
+                "b.dll": LiveManifestEntry(
+                    path="b.dll", size_bytes=50, sealed_bytes=50, complete=False
+                ),
+            },
+        )
+        assert runner._install_output_looks_finished(tmp_path) is True
+
+    def test_false_when_a_file_is_still_mid_write(self, tmp_path):
+        from handler.install.manifest import write_live_manifest
+
+        write_live_manifest(
+            tmp_path,
+            {
+                "a.exe": LiveManifestEntry(
+                    path="a.exe", size_bytes=100, sealed_bytes=100, complete=False
+                ),
+                "b.dll": LiveManifestEntry(
+                    # Still growing - not yet sealed up to its current size.
+                    path="b.dll", size_bytes=500, sealed_bytes=50, complete=False
+                ),
+            },
+        )
+        assert runner._install_output_looks_finished(tmp_path) is False
+
+    def test_false_when_no_live_manifest_was_ever_written(self, tmp_path):
+        # Native (non-Wine) installers never start the live-manifest loop
+        # at all, or the installer crashed before writing anything.
+        assert runner._install_output_looks_finished(tmp_path) is False
+
+
+class TestFinalizeInstall:
+    """Regression coverage for a real bug: the installer's actual output
+    lives several levels deep inside the Wine prefix
+    (`prefix/pfx/drive_c/...`), but every manifest path - and the download
+    endpoint that serves it - is relative to the session's own cache
+    directory (`work_dir`), per `handler.install.manifest`'s own module
+    docstring. `_finalize_install` used to hash files in place and record
+    them relative to the (deeply nested, vendor-folder-trimmed) discovery
+    root without ever moving them, so `work_dir / entry.path` - exactly what
+    the download endpoints resolve - pointed at a path that was never real
+    on disk. Caught live: a finished install (state=done) 500'd on every
+    file download with "File at path ... does not exist.\""""
+
+    def _setup(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            runner, "db_install_session_handler", MagicMock()
+        )
+        work_dir = tmp_path / "work"
+        prefix_dir = work_dir / "prefix"
+        drive_c = prefix_dir / "drive_c"
+        drive_c.mkdir(parents=True)
+        work_dir.mkdir(exist_ok=True)
+        return work_dir, prefix_dir, drive_c
+
+    def test_relocates_a_single_vendor_folder_install_under_work_dir(
+        self, tmp_path, monkeypatch
+    ):
+        work_dir, prefix_dir, drive_c = self._setup(tmp_path, monkeypatch)
+        game_file = drive_c / "GOG Games" / "Some Game" / "data.bin"
+        game_file.parent.mkdir(parents=True)
+        game_file.write_bytes(b"payload")
+
+        runner._finalize_install(1, prefix_dir, work_dir)
+
+        # The vendor folder is trimmed from the exposed path (resolve_install_root),
+        # and the file itself must have actually moved there - not just been
+        # recorded as if it had.
+        moved = work_dir / "Some Game" / "data.bin"
+        assert moved.is_file()
+        assert moved.read_bytes() == b"payload"
+        assert not game_file.exists()
+
+        from handler.install.manifest import read_manifest
+
+        entries = read_manifest(work_dir)
+        assert entries is not None
+        assert len(entries) == 1
+        assert entries[0].path == "Some Game/data.bin"
+        # The exact join the download endpoint performs - must resolve.
+        assert (work_dir / entries[0].path).is_file()
+
+    def test_relocates_an_ambiguous_root_install_under_work_dir(
+        self, tmp_path, monkeypatch
+    ):
+        # Two top-level content folders under drive_c (e.g. a vendor folder
+        # plus a Wine user-profile shortcut) make resolve_install_root fall
+        # back to drive_c itself, untrimmed - the exact shape of the live
+        # session (163) that surfaced this bug. Even then, every manifest
+        # path must still resolve under work_dir once finalized.
+        work_dir, prefix_dir, drive_c = self._setup(tmp_path, monkeypatch)
+        game_file = drive_c / "GOG Games" / "Some Game" / "data.bin"
+        game_file.parent.mkdir(parents=True)
+        game_file.write_bytes(b"payload")
+        shortcut = drive_c / "users" / "steamuser" / "Desktop" / "Some Game.lnk"
+        shortcut.parent.mkdir(parents=True)
+        shortcut.write_bytes(b"lnk")
+
+        runner._finalize_install(1, prefix_dir, work_dir)
+
+        from handler.install.manifest import read_manifest
+
+        entries = read_manifest(work_dir)
+        assert entries is not None
+        assert {e.path for e in entries} == {
+            "GOG Games/Some Game/data.bin",
+            "users/steamuser/Desktop/Some Game.lnk",
+        }
+        for entry in entries:
+            assert (work_dir / entry.path).is_file()
+        assert not game_file.exists()
+        assert not shortcut.exists()
+
+    def test_raises_when_nothing_was_found(self, tmp_path, monkeypatch):
+        work_dir, prefix_dir, _drive_c = self._setup(tmp_path, monkeypatch)
+
+        with pytest.raises(RuntimeError, match="no files were found"):
+            runner._finalize_install(1, prefix_dir, work_dir)
+
+
+class TestLiveManifestLoop:
+    """Regression coverage for a real bug: while an install was still
+    running, its live manifest recorded paths relative to the (deeply
+    nested) discovery root - exactly the same contract violation
+    TestFinalizeInstall covers for the finished-install case - so the
+    download endpoint (which always resolves against `work_dir`) could
+    never actually find a file mid-install, no matter how long the user
+    watched it "stream". Caught live: a real install with a real growing
+    UnityPlayer.dll on disk, 500ing on every attempt to download it."""
+
+    def _setup(self, tmp_path):
+        work_dir = tmp_path / "work"
+        prefix_dir = work_dir / "prefix"
+        drive_c = prefix_dir / "drive_c"
+        drive_c.mkdir(parents=True)
+        work_dir.mkdir(exist_ok=True)
+        return work_dir, prefix_dir, drive_c
+
+    def test_hardlinks_a_new_file_into_work_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(runner, "LIVE_MANIFEST_INTERVAL", 0)
+        work_dir, prefix_dir, drive_c = self._setup(tmp_path)
+        game_file = drive_c / "GOG Games" / "Some Game" / "data.bin"
+        game_file.parent.mkdir(parents=True)
+        game_file.write_bytes(b"partial")
+
+        stop = threading.Event()
+        stop.set()  # run exactly one iteration
+        runner._live_manifest_loop(work_dir, prefix_dir, frozenset(), stop)
+
+        # The exact join the download endpoint performs - must resolve, and
+        # must be the real, growable file (a hardlink), not a snapshot copy.
+        linked = work_dir / "Some Game" / "data.bin"
+        assert linked.is_file()
+        assert linked.read_bytes() == b"partial"
+        assert linked.stat().st_ino == game_file.stat().st_ino
+        # The original is left alone - _finalize_install's own separate,
+        # move-based pass still needs to find it once the installer exits.
+        assert game_file.exists()
+
+        from handler.install.manifest import read_live_manifest
+
+        live = read_live_manifest(work_dir)
+        assert live is not None
+        assert "Some Game/data.bin" in live
+
+    def test_a_file_keeps_growing_at_its_hardlinked_path_across_scans(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(runner, "LIVE_MANIFEST_INTERVAL", 0)
+        work_dir, prefix_dir, drive_c = self._setup(tmp_path)
+        game_file = drive_c / "Some Game" / "data.bin"
+        game_file.parent.mkdir(parents=True)
+        game_file.write_bytes(b"a" * 100)
+
+        stop = threading.Event()
+        scans = []
+        real_collect = runner.collect_windows_install_files
+
+        def fake_collect(prefix, baseline):
+            scans.append(1)
+            if len(scans) == 2:
+                # The installer wrote more between the two scans.
+                game_file.write_bytes(b"a" * 200)
+            if len(scans) >= 2:
+                stop.set()
+            return real_collect(prefix, baseline)
+
+        monkeypatch.setattr(runner, "collect_windows_install_files", fake_collect)
+        runner._live_manifest_loop(work_dir, prefix_dir, frozenset(), stop)
+
+        linked = work_dir / "Some Game" / "data.bin"
+        # Same hardlinked path throughout - the growth must show up there,
+        # not get lost because a later scan re-resolved a different path.
+        assert linked.stat().st_size == 200
+        assert len(scans) == 2
+
+    def test_finalize_still_finds_the_original_after_the_live_loop_linked_it(
+        self, tmp_path, monkeypatch
+    ):
+        # The scenario TestFinalizeInstall alone can't cover: a file the
+        # live loop already hardlinked into work_dir mid-install must not
+        # confuse _finalize_install's own, independent, move-based pass
+        # once the installer exits - same-inode "move onto itself" must be
+        # harmless, and the file must still end up correctly in the final
+        # manifest.
+        monkeypatch.setattr(runner, "LIVE_MANIFEST_INTERVAL", 0)
+        monkeypatch.setattr(runner, "db_install_session_handler", MagicMock())
+        work_dir, prefix_dir, drive_c = self._setup(tmp_path)
+        game_file = drive_c / "Some Game" / "data.bin"
+        game_file.parent.mkdir(parents=True)
+        game_file.write_bytes(b"final content")
+
+        stop = threading.Event()
+        stop.set()
+        runner._live_manifest_loop(work_dir, prefix_dir, frozenset(), stop)
+        assert (work_dir / "Some Game" / "data.bin").is_file()
+
+        runner._finalize_install(1, prefix_dir, work_dir)
+
+        from handler.install.manifest import read_manifest
+
+        entries = read_manifest(work_dir)
+        assert entries is not None
+        assert len(entries) == 1
+        assert entries[0].path == "Some Game/data.bin"
+        assert (work_dir / entries[0].path).read_bytes() == b"final content"

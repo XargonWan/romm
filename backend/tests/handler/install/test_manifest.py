@@ -112,105 +112,60 @@ class TestFindManifestEntry:
 
 
 class TestScanLiveManifest:
-    def test_first_scan_never_seals_anything(self, tmp_path, monkeypatch):
-        import handler.install.manifest as manifest_mod
-
-        monkeypatch.setattr(manifest_mod, "CHUNK_SIZE", 4)
+    def test_first_scan_never_seals_anything(self, tmp_path):
         f = tmp_path / "a.bin"
-        f.write_bytes(b"x" * 10)  # covers chunks 0 and 1 fully, 2 bytes into chunk 2
+        f.write_bytes(b"x" * 10)
 
         state = scan_live_manifest(tmp_path, [f])
         entry = state["a.bin"]
         assert entry.size_bytes == 10
         assert entry.sealed_bytes == 0
-        assert entry.chunks == ()
         assert entry.complete is False
 
-    def test_seals_a_chunk_only_after_a_second_scan_confirms_it(
-        self, tmp_path, monkeypatch
-    ):
-        import handler.install.manifest as manifest_mod
-
-        monkeypatch.setattr(manifest_mod, "CHUNK_SIZE", 4)
+    def test_seals_the_whole_file_once_size_is_confirmed_stable(self, tmp_path):
+        # Not gated by any chunk-size boundary - a file (or a file's
+        # trailing remainder) smaller than one CHUNK_SIZE must still fully
+        # seal once it's stopped growing, not stay unstreamable forever
+        # (the exact bug this replaced the old chunk-based version to fix).
         f = tmp_path / "a.bin"
         f.write_bytes(b"x" * 10)
 
         state = scan_live_manifest(tmp_path, [f])  # first sight: seals nothing
-        state = scan_live_manifest(tmp_path, [f], state)  # confirmed: 0 and 1 seal
+        state = scan_live_manifest(tmp_path, [f], state)  # unchanged: fully sealed
 
         entry = state["a.bin"]
-        assert entry.sealed_bytes == 8
-        assert [c.index for c in entry.chunks] == [0, 1]
+        assert entry.sealed_bytes == 10
 
-    def test_growth_needs_its_own_fresh_confirmation(self, tmp_path, monkeypatch):
-        import handler.install.manifest as manifest_mod
-
-        monkeypatch.setattr(manifest_mod, "CHUNK_SIZE", 4)
+    def test_growth_needs_its_own_fresh_confirmation(self, tmp_path):
         f = tmp_path / "a.bin"
         f.write_bytes(b"x" * 10)
         state = scan_live_manifest(tmp_path, [f])
         state = scan_live_manifest(tmp_path, [f], state)
-        sealed_before = state["a.bin"].chunks
+        assert state["a.bin"].sealed_bytes == 10
 
         f.write_bytes(b"x" * 20)  # grows further, mid-write
         state = scan_live_manifest(tmp_path, [f], state)
-        # Newly-covered chunks aren't sealed on the same scan they appeared in;
-        # what was already sealed carries over unchanged.
-        assert state["a.bin"].chunks == sealed_before
+        # The newly-written bytes aren't trusted on the same scan they
+        # appeared in; what was already sealed carries over unchanged.
+        assert state["a.bin"].sealed_bytes == 10
 
+        # Unchanged since the last scan again - the new size is now stable
+        # too, so it seals in full.
         state = scan_live_manifest(tmp_path, [f], state)
-        assert len(state["a.bin"].chunks) == 20 // 4
+        assert state["a.bin"].sealed_bytes == 20
 
-    def test_sealed_chunk_hash_matches_its_actual_bytes(self, tmp_path, monkeypatch):
-        import handler.install.manifest as manifest_mod
-
-        monkeypatch.setattr(manifest_mod, "CHUNK_SIZE", 4)
+    def test_sealed_bytes_never_regresses(self, tmp_path):
         f = tmp_path / "a.bin"
-        f.write_bytes(b"abcdefgh")
+        f.write_bytes(b"x" * 10)
         state = scan_live_manifest(tmp_path, [f])
         state = scan_live_manifest(tmp_path, [f], state)
+        assert state["a.bin"].sealed_bytes == 10
 
-        assert state["a.bin"].chunks[0].sha1 == hashlib.sha1(b"abcd").hexdigest()
-        assert state["a.bin"].chunks[1].sha1 == hashlib.sha1(b"efgh").hexdigest()
-
-    def test_a_sealed_chunk_is_never_rehashed(self, tmp_path, monkeypatch):
-        import handler.install.manifest as manifest_mod
-
-        monkeypatch.setattr(manifest_mod, "CHUNK_SIZE", 4)
-        f = tmp_path / "a.bin"
-        f.write_bytes(b"abcd" + b"x" * 4)
-        state = scan_live_manifest(tmp_path, [f])
+        # A shrink shouldn't happen in practice, but sealed_bytes must not
+        # go backwards even if one somehow did.
+        f.write_bytes(b"x" * 3)
         state = scan_live_manifest(tmp_path, [f], state)
-        sealed_sha1 = state["a.bin"].chunks[0].sha1
-
-        # Corrupt the already-sealed bytes on disk directly (something the
-        # real installer would never do, but proves sealing is trusted, not
-        # re-verified, once confirmed).
-        f.write_bytes(b"ZZZZ" + b"x" * 4)
-        state = scan_live_manifest(tmp_path, [f], state)
-        assert state["a.bin"].chunks[0].sha1 == sealed_sha1
-
-    def test_fully_grown_file_eventually_matches_the_real_full_file_hash(
-        self, tmp_path, monkeypatch
-    ):
-        import handler.install.manifest as manifest_mod
-
-        monkeypatch.setattr(manifest_mod, "CHUNK_SIZE", 4)
-        f = tmp_path / "a.bin"
-        content = b"0123456789ABCDEF"  # exactly 4 chunks of 4 bytes
-        f.write_bytes(content)
-
-        state: dict = {}
-        for _ in range(3):  # first sight, then confirmation, then steady-state
-            state = scan_live_manifest(tmp_path, [f], state)
-
-        entry = state["a.bin"]
-        assert entry.sealed_bytes == len(content)
-        # Each chunk's own hash matches its slice, and all four are present.
-        assert [c.sha1 for c in entry.chunks] == [
-            hashlib.sha1(content[i : i + 4]).hexdigest() for i in range(0, 16, 4)
-        ]
-        assert hash_file_sha1(f) == hashlib.sha1(content).hexdigest()
+        assert state["a.bin"].sealed_bytes == 10
 
     def test_missing_file_is_skipped(self, tmp_path):
         missing = tmp_path / "gone.bin"
@@ -219,19 +174,15 @@ class TestScanLiveManifest:
 
 
 class TestLiveViewOfFinalManifest:
-    def test_marks_every_entry_complete_with_no_chunks(self):
+    def test_marks_every_entry_complete(self):
         entries = [ManifestEntry(path="a.exe", size_bytes=5, sha1="deadbeef")]
         live = live_view_of_final_manifest(entries)
         assert live["a.exe"].complete is True
         assert live["a.exe"].sealed_bytes == 5
-        assert live["a.exe"].chunks == ()
 
 
 class TestLiveManifestRoundTrip:
-    def test_write_then_read(self, tmp_path, monkeypatch):
-        import handler.install.manifest as manifest_mod
-
-        monkeypatch.setattr(manifest_mod, "CHUNK_SIZE", 4)
+    def test_write_then_read(self, tmp_path):
         f = tmp_path / "a.bin"
         f.write_bytes(b"abcdefgh")
         state = scan_live_manifest(tmp_path, [f])

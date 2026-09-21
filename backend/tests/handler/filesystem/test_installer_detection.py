@@ -7,6 +7,7 @@ from handler.filesystem.installer_detection import (
     RANK_TOP_LEVEL_EXECUTABLE,
     DetectedFile,
     detect_installer_candidates,
+    pick_confident_installer,
 )
 
 
@@ -105,3 +106,39 @@ class TestDetectInstallerCandidates:
         ranks = {c.path: c.rank for c in result}
         assert ranks["SETUP.EXE"] == RANK_KNOWN_INSTALLER
         assert ranks["Disc.ISO"] == RANK_DISC_IMAGE
+
+
+class TestPickConfidentInstaller:
+    def test_no_candidates_returns_none(self):
+        assert pick_confident_installer([]) is None
+
+    def test_top_ranked_known_installer_is_picked(self):
+        candidates = detect_installer_candidates(
+            [DetectedFile("setup.exe", 100), DetectedFile("readme.txt", 1)]
+        )
+        picked = pick_confident_installer(candidates)
+        assert picked is not None
+        assert picked.path == "setup.exe"
+
+    def test_top_ranked_plain_executable_is_not_confident(self):
+        # Only a well-known name (gog-*.exe, setup*.exe, ...) is confident
+        # enough to auto-start without asking - a generic top-level .exe
+        # (e.g. "Game Title.exe") isn't, even as the sole candidate.
+        candidates = detect_installer_candidates([DetectedFile("Game Title.exe", 100)])
+        assert pick_confident_installer(candidates) is None
+
+    def test_multiple_same_rank_candidates_are_not_ambiguous(self):
+        # Several known-installer names tie for rank 0 - detect_installer_candidates
+        # already breaks the tie deterministically (biggest first), so the
+        # top entry is picked exactly like a human clicking the first,
+        # largest option would - not treated as needing a manual choice.
+        candidates = detect_installer_candidates(
+            [
+                DetectedFile("setup_v1.exe", 100),
+                DetectedFile("setup_v2.exe", 200),
+                DetectedFile("gog-installer.exe", 50),
+            ]
+        )
+        picked = pick_confident_installer(candidates)
+        assert picked is not None
+        assert picked.path == "setup_v2.exe"
