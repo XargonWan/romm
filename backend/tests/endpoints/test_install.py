@@ -62,10 +62,9 @@ class TestGetInstallCandidates:
     def test_non_windows_rom_flags_stream_copy(
         self, client: TestClient, access_token: str, rom: Rom
     ):
-        with patch("endpoints.roms.install.has_install_worker", return_value=True):
-            r = client.get(
-                f"/api/roms/{rom.id}/install/candidates", headers=_auth(access_token)
-            )
+        r = client.get(
+            f"/api/roms/{rom.id}/install/candidates", headers=_auth(access_token)
+        )
         assert r.status_code == status.HTTP_200_OK
         body = r.json()
         assert body["stream_copy"] is True
@@ -74,11 +73,10 @@ class TestGetInstallCandidates:
     def test_windows_rom_with_no_files_needs_manual_pick(
         self, client: TestClient, access_token: str, win_rom: Rom
     ):
-        with patch("endpoints.roms.install.has_install_worker", return_value=True):
-            r = client.get(
-                f"/api/roms/{win_rom.id}/install/candidates",
-                headers=_auth(access_token),
-            )
+        r = client.get(
+            f"/api/roms/{win_rom.id}/install/candidates",
+            headers=_auth(access_token),
+        )
         assert r.status_code == status.HTTP_200_OK
         body = r.json()
         assert body["stream_copy"] is False
@@ -86,20 +84,23 @@ class TestGetInstallCandidates:
         assert body["candidates"] == []
 
     def test_unknown_rom_404s(self, client: TestClient, access_token: str):
-        with patch("endpoints.roms.install.has_install_worker", return_value=True):
-            r = client.get(
-                "/api/roms/999999/install/candidates", headers=_auth(access_token)
-            )
+        r = client.get(
+            "/api/roms/999999/install/candidates", headers=_auth(access_token)
+        )
         assert r.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_no_worker_by_default(self, client: TestClient, access_token: str, rom: Rom):
-        # No worker is registered in the test environment unless mocked in,
-        # so this exercises the real has_install_worker() - there's no
-        # separate on/off setting to bypass anymore.
-        r = client.get(
-            f"/api/roms/{rom.id}/install/candidates", headers=_auth(access_token)
-        )
-        assert r.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    def test_works_without_a_worker(
+        self, client: TestClient, access_token: str, rom: Rom
+    ):
+        # Purely a filesystem scan - no job is enqueued, so this must not
+        # require an install-sandbox worker to be connected (manual mode
+        # relies on candidates/manual_install_url being available even when
+        # no worker is registered, see start_install_session's docstring).
+        with patch("endpoints.roms.install.has_install_worker", return_value=False):
+            r = client.get(
+                f"/api/roms/{rom.id}/install/candidates", headers=_auth(access_token)
+            )
+        assert r.status_code == status.HTTP_200_OK
 
 
 class TestStartInstallSession:
@@ -367,6 +368,40 @@ class TestClearInstallSession:
             )
         )
         r = client.delete(f"/api/roms/{win_rom.id}/install", headers=_auth(access_token))
+        assert r.status_code == status.HTTP_200_OK
+        assert db_install_session_handler.get_session(session.id) is None
+
+    @pytest.mark.asyncio
+    async def test_finished_session_with_an_active_downloader_cannot_be_cleared(
+        self, client: TestClient, access_token: str, win_rom: Rom, admin_user: User
+    ):
+        # A DONE session's cache is exactly what a client keeps pulling files
+        # from after the install finishes - clearing it out from under an
+        # in-flight download is just as destructive as clearing a still-
+        # running one, even though the session itself is no longer "active".
+        session = db_install_session_handler.add_session(
+            InstallSession(
+                rom_id=win_rom.id,
+                user_id=admin_user.id,
+                state=InstallSessionState.DONE,
+            )
+        )
+        await stream_presence.heartbeat(session.id, user_id=99, device_id="steamdeck")
+
+        r = client.delete(f"/api/roms/{win_rom.id}/install", headers=_auth(access_token))
+        assert r.status_code == status.HTTP_409_CONFLICT
+        assert db_install_session_handler.get_session(session.id) is not None
+
+        # Once that client's presence naturally expires (or it disconnects),
+        # clearing goes back to working normally - this isn't a permanent
+        # lock, just a "not right now" while someone's actively reading it.
+        with patch(
+            "endpoints.roms.install.stream_presence.count_viewers",
+            new=AsyncMock(return_value=0),
+        ):
+            r = client.delete(
+                f"/api/roms/{win_rom.id}/install", headers=_auth(access_token)
+            )
         assert r.status_code == status.HTTP_200_OK
         assert db_install_session_handler.get_session(session.id) is None
 
@@ -788,6 +823,80 @@ class TestGetInstallStreamManifest:
                 "complete": True,
             }
         ]
+
+    def test_session_id_pins_to_that_session_even_when_a_newer_one_exists(
+        self,
+        client: TestClient,
+        access_token: str,
+        rom: Rom,
+        admin_user: User,
+        install_cache_root,
+    ):
+        # A finished attempt a client might still be streaming from...
+        old_session = db_install_session_handler.add_session(
+            InstallSession(
+                rom_id=rom.id, user_id=admin_user.id, state=InstallSessionState.DONE
+            )
+        )
+        old_cache_dir = install_cache_root / str(old_session.id)
+        old_cache_dir.mkdir(parents=True)
+        (old_cache_dir / "game.exe").write_bytes(b"hello world")
+        write_manifest(old_cache_dir, build_manifest(old_cache_dir))
+
+        # ...while a completely unrelated, fresh attempt starts for the same
+        # ROM (a different client, or the same one pressing Install again) -
+        # this becomes "latest" but must not steal a pinned client's view.
+        db_install_session_handler.add_session(
+            InstallSession(
+                rom_id=rom.id,
+                user_id=admin_user.id,
+                state=InstallSessionState.INSTALLING,
+            )
+        )
+
+        pinned = client.get(
+            f"/api/roms/{rom.id}/install/stream/manifest?session_id={old_session.id}",
+            headers=_auth(access_token),
+        )
+        assert pinned.status_code == status.HTTP_200_OK
+        assert pinned.json()["files"] == [
+            {
+                "path": "game.exe",
+                "size_bytes": 11,
+                "sealed_bytes": 11,
+                "complete": True,
+            }
+        ]
+
+        # No session_id given still resolves to the latest, as before.
+        unpinned = client.get(
+            f"/api/roms/{rom.id}/install/stream/manifest", headers=_auth(access_token)
+        )
+        assert unpinned.status_code == status.HTTP_200_OK
+        assert unpinned.json()["files"] == []
+
+    def test_session_id_for_a_different_rom_404s(
+        self,
+        client: TestClient,
+        access_token: str,
+        rom: Rom,
+        win_rom: Rom,
+        admin_user: User,
+        install_cache_root,
+    ):
+        other_session = db_install_session_handler.add_session(
+            InstallSession(
+                rom_id=win_rom.id,
+                user_id=admin_user.id,
+                state=InstallSessionState.DONE,
+            )
+        )
+
+        r = client.get(
+            f"/api/roms/{rom.id}/install/stream/manifest?session_id={other_session.id}",
+            headers=_auth(access_token),
+        )
+        assert r.status_code == status.HTTP_404_NOT_FOUND
 
     @pytest.mark.asyncio
     async def test_reports_viewer_count_and_bandwidth_limit(
