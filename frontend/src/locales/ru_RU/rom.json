@@ -183,7 +183,7 @@
   "install-proton-no-installs": "Сборки Proton пока не установлены. Скачайте одну ниже, чтобы начать.",
   "install-proton-not-installed": "Не установлено",
   "install-proton-version": "Версия Proton",
-  "install-select-file": "Файл установщика",
+  "install-select-file": "Исполняемый файл установщика",
   "install-snackbar-abort-failed": "Не удалось прервать установку: {detail}",
   "install-snackbar-aborted": "Установка прервана",
   "install-snackbar-cache-cleared": "Кэш установки очищен",

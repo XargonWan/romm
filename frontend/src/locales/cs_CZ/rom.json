@@ -183,7 +183,7 @@
   "install-proton-no-installs": "Zatím nejsou nainstalována žádná sestavení Proton. Stáhněte si jedno níže a začněte.",
   "install-proton-not-installed": "Nenainstalováno",
   "install-proton-version": "Verze Proton",
-  "install-select-file": "Soubor instalátoru",
+  "install-select-file": "Spustitelný soubor instalátoru",
   "install-snackbar-abort-failed": "Nepodařilo se přerušit instalaci: {detail}",
   "install-snackbar-aborted": "Instalace byla přerušena",
   "install-snackbar-cache-cleared": "Mezipaměť instalace byla vymazána",

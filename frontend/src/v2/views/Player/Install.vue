@@ -391,6 +391,7 @@ const downloadSpeedLimitLabel = computed(() =>
           v-model="selectedInstallerPath"
           variant="outlined"
           density="comfortable"
+          prefix-label="stacked"
           prepend-inner-icon="mdi-file-outline"
           hide-details
           :disabled="isBusy"
@@ -403,6 +404,7 @@ const downloadSpeedLimitLabel = computed(() =>
           v-model="selectedProtonBuild"
           variant="outlined"
           density="comfortable"
+          prefix-label="stacked"
           prepend-inner-icon="mdi-package-variant-closed"
           hide-details
           :disabled="isBusy"

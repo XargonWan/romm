@@ -183,7 +183,7 @@
   "install-proton-no-installs": "Nu este instalată încă nicio versiune de Proton. Descarcă una mai jos pentru a începe.",
   "install-proton-not-installed": "Neinstalat",
   "install-proton-version": "Versiune Proton",
-  "install-select-file": "Fișierul instalatorului",
+  "install-select-file": "Fișierul executabil al instalatorului",
   "install-snackbar-abort-failed": "Instalarea nu a putut fi întreruptă: {detail}",
   "install-snackbar-aborted": "Instalarea a fost întreruptă",
   "install-snackbar-cache-cleared": "Cache-ul de instalare a fost golit",

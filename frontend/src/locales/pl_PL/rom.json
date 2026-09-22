@@ -183,7 +183,7 @@
   "install-proton-no-installs": "Żadna kompilacja Proton nie jest jeszcze zainstalowana. Pobierz jedną poniżej, aby zacząć.",
   "install-proton-not-installed": "Niezainstalowane",
   "install-proton-version": "Wersja Proton",
-  "install-select-file": "Plik instalatora",
+  "install-select-file": "Plik wykonywalny instalatora",
   "install-snackbar-abort-failed": "Nie udało się przerwać instalacji: {detail}",
   "install-snackbar-aborted": "Instalacja przerwana",
   "install-snackbar-cache-cleared": "Pamięć podręczna instalacji wyczyszczona",

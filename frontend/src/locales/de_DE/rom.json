@@ -183,7 +183,7 @@
   "install-proton-no-installs": "Es sind noch keine Proton-Builds installiert. Lade unten eines herunter, um loszulegen.",
   "install-proton-not-installed": "Nicht installiert",
   "install-proton-version": "Proton-Version",
-  "install-select-file": "Installer-Datei",
+  "install-select-file": "Ausführbare Installer-Datei",
   "install-snackbar-abort-failed": "Installation konnte nicht abgebrochen werden: {detail}",
   "install-snackbar-aborted": "Installation abgebrochen",
   "install-snackbar-cache-cleared": "Installations-Cache geleert",

@@ -183,7 +183,7 @@
   "install-proton-no-installs": "尚未安裝任何 Proton 版本。請在下方下載一個以開始使用。",
   "install-proton-not-installed": "未安裝",
   "install-proton-version": "Proton 版本",
-  "install-select-file": "安裝程式檔案",
+  "install-select-file": "安裝程式可執行檔",
   "install-snackbar-abort-failed": "中止安裝失敗: {detail}",
   "install-snackbar-aborted": "安裝已中止",
   "install-snackbar-cache-cleared": "安裝快取已清除",

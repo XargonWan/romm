@@ -183,7 +183,7 @@
   "install-proton-no-installs": "Aún no hay ninguna versión de Proton instalada. Descarga una a continuación para empezar.",
   "install-proton-not-installed": "No instalado",
   "install-proton-version": "Versión de Proton",
-  "install-select-file": "Archivo del instalador",
+  "install-select-file": "Ejecutable del instalador",
   "install-snackbar-abort-failed": "No se pudo interrumpir la instalación: {detail}",
   "install-snackbar-aborted": "Instalación interrumpida",
   "install-snackbar-cache-cleared": "Caché de instalación borrada",

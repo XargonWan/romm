@@ -183,7 +183,7 @@
   "install-proton-no-installs": "아직 설치된 Proton 빌드가 없습니다. 아래에서 하나를 다운로드하여 시작하세요.",
   "install-proton-not-installed": "설치되지 않음",
   "install-proton-version": "Proton 버전",
-  "install-select-file": "설치 프로그램 파일",
+  "install-select-file": "설치 프로그램 실행 파일",
   "install-snackbar-abort-failed": "설치를 중단하지 못했습니다: {detail}",
   "install-snackbar-aborted": "설치가 중단되었습니다",
   "install-snackbar-cache-cleared": "설치 캐시가 삭제되었습니다",
