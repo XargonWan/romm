@@ -13,9 +13,15 @@
  * ``"cachyos-latest"``) used for new Windows install sessions when the user
  * hasn't explicitly chosen one. ``None`` falls back to the first build
  * discovered on disk.
+ *
+ * ``stream_uncompleted_files`` is the experimental "Stream uncompleted
+ * files" toggle - see handler.install.manifest.scan_live_manifest's own
+ * ``aggressive`` param for what it actually changes. ``None`` leaves it
+ * unchanged.
  */
 export type InstallSettingsPayload = {
     download_speed_limit_bytes_per_sec?: (number | null);
     default_proton_build?: (string | null);
+    stream_uncompleted_files?: (boolean | null);
 };
 

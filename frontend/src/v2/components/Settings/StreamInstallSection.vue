@@ -16,6 +16,7 @@ import type { Config } from "@/stores/config";
 import storeConfig from "@/stores/config";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
 import SettingsSection from "./SettingsSection.vue";
+import SettingsToggleRow from "./SettingsToggleRow.vue";
 
 const { t } = useI18n();
 const snackbar = useSnackbar();
@@ -48,9 +49,16 @@ const savedProtonBuild = ref<string | null>(selectedProtonBuild.value);
 const downloadingBuilds = ref<Record<string, number>>({});
 const loadingBuilds = ref(false);
 
+const streamUncompletedFiles = ref(
+  config.value.INSTALL_STREAM_UNCOMPLETED_FILES,
+);
+const savedStreamUncompletedFiles = ref(streamUncompletedFiles.value);
+
 const dirty = computed(() => {
   if (kbPerSec.value !== savedSnapshot.value) return true;
   if (selectedProtonBuild.value !== savedProtonBuild.value) return true;
+  if (streamUncompletedFiles.value !== savedStreamUncompletedFiles.value)
+    return true;
   return false;
 });
 
@@ -72,6 +80,8 @@ async function loadConfig() {
     savedSnapshot.value = kbPerSec.value;
     selectedProtonBuild.value = cfg.INSTALL_DEFAULT_PROTON_BUILD ?? null;
     savedProtonBuild.value = selectedProtonBuild.value;
+    streamUncompletedFiles.value = cfg.INSTALL_STREAM_UNCOMPLETED_FILES;
+    savedStreamUncompletedFiles.value = streamUncompletedFiles.value;
   } catch {
     // Best-effort: the section still renders with whatever the store
     // already had (e.g. from a previous successful load).
@@ -100,6 +110,7 @@ onMounted(() => {
 function onReset() {
   kbPerSec.value = savedSnapshot.value;
   selectedProtonBuild.value = savedProtonBuild.value;
+  streamUncompletedFiles.value = savedStreamUncompletedFiles.value;
 }
 
 async function onSave() {
@@ -112,9 +123,11 @@ async function onSave() {
     await configApi.updateInstallSettings({
       download_speed_limit_bytes_per_sec: bytesPerSec,
       default_proton_build: selectedProtonBuild.value,
+      stream_uncompleted_files: streamUncompletedFiles.value,
     });
     savedSnapshot.value = kbPerSec.value;
     savedProtonBuild.value = selectedProtonBuild.value;
+    savedStreamUncompletedFiles.value = streamUncompletedFiles.value;
     await configStore.fetchConfig();
     snackbar.success(t("settings.stream-install-saved"));
   } catch (err) {
@@ -303,6 +316,18 @@ const downloadableBuilds = computed(() =>
       <div v-if="loadingBuilds" class="r-v2-stream-install__builds-loading">
         <RProgressCircular indeterminate size="small" color="primary" />
       </div>
+    </SettingsSection>
+
+    <SettingsSection
+      :title="t('settings.stream-install-experimental-title')"
+      icon="mdi-flask-outline"
+    >
+      <SettingsToggleRow
+        v-model="streamUncompletedFiles"
+        :title="t('settings.stream-install-uncompleted-files')"
+        :description="t('settings.stream-install-uncompleted-files-desc')"
+        :disabled="!canEdit || loading"
+      />
     </SettingsSection>
 
     <Transition name="r-v2-stream-install__bar">
