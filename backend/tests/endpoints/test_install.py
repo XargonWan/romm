@@ -846,13 +846,16 @@ class TestGetInstallStreamManifest:
         # ...while a completely unrelated, fresh attempt starts for the same
         # ROM (a different client, or the same one pressing Install again) -
         # this becomes "latest" but must not steal a pinned client's view.
-        db_install_session_handler.add_session(
+        new_session = db_install_session_handler.add_session(
             InstallSession(
                 rom_id=rom.id,
                 user_id=admin_user.id,
                 state=InstallSessionState.INSTALLING,
             )
         )
+        new_cache_dir = install_cache_root / str(new_session.id)
+        new_cache_dir.mkdir(parents=True)
+        write_live_manifest(new_cache_dir, {})
 
         pinned = client.get(
             f"/api/roms/{rom.id}/install/stream/manifest?session_id={old_session.id}",
@@ -868,7 +871,9 @@ class TestGetInstallStreamManifest:
             }
         ]
 
-        # No session_id given still resolves to the latest, as before.
+        # No session_id given still resolves to the latest (the new, still
+        # empty session) as before - a client that never learned an id
+        # keeps seeing whatever is currently the most recent attempt.
         unpinned = client.get(
             f"/api/roms/{rom.id}/install/stream/manifest", headers=_auth(access_token)
         )
