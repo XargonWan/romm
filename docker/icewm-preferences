@@ -10,3 +10,44 @@
 # clicker and anything a real user types through the VNC session) go
 # nowhere. Forcing this on fixes that unconditionally.
 FocusOnMapTransient=1
+
+# This taskbar is shown for exactly one purpose - clicking through a
+# Windows installer wizard over VNC - not as a general-purpose desktop, so
+# every widget that only makes sense on a real desktop is stripped out.
+# Key names/values confirmed against this image's own installed IceWM via
+# /usr/share/icewm/preferences (the shipped, fully-commented defaults file).
+
+# Start menu button: nothing to launch in this sandbox.
+TaskBarShowStartMenu=0
+
+# "Show desktop" button: minimizes every window: there's only ever the one
+# installer window, and hiding it would just strand the user on a plain
+# background with no way back short of the taskbar's window-list.
+TaskBarShowShowDesktopButton=0
+
+# Only one virtual desktop is ever used here - reduced from IceWM's default
+# 4 (WorkspaceNames below) and its pager buttons hidden outright, rather
+# than just leaving the switching functionality reachable via keyboard
+# shortcuts nobody has a reason to use in this context.
+TaskBarShowWorkspaces=0
+WorkspaceNames=" 1 "
+
+# System monitor widgets (CPU/RAM/network/mail) - irrelevant to installing
+# a single game. Not all off by default: Net/Mailbox status default to on.
+TaskBarShowCPUStatus=0
+TaskBarShowMEMStatus=0
+TaskBarShowNetStatus=0
+TaskBarShowMailboxStatus=0
+
+# Clock: this session lasts as long as one install; nobody needs the time.
+TaskBarShowClock=0
+
+# Logout/shutdown/reboot/suspend menu entries: there's no reason for a
+# sandboxed installer session to ever touch the host's power state, and
+# nobody administers this machine through it. No dedicated taskbar widget
+# exists for this in stock IceWM - it's reached through the (already
+# disabled) Start menu's logout submenu, or the Windows/Super key shortcut
+# that opens the same menu regardless of button visibility - so these are
+# disabled at the source rather than just hiding whatever exposes them.
+ShowLogoutMenu=0
+ShowLogoutSubMenu=0
