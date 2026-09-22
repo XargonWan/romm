@@ -481,6 +481,37 @@ class TestCancelInstallSession:
         assert r.status_code == status.HTTP_200_OK
         assert r.json()["state"] == InstallSessionState.FAILED.value
 
+    def test_clear_cache_false_keeps_the_partial_download(
+        self,
+        client: TestClient,
+        access_token: str,
+        win_rom: Rom,
+        admin_user: User,
+        install_cache_root,
+    ):
+        # The web UI's own two-step abort confirmation ("keep the partial
+        # download or clear it?") passes this when the user chose to keep
+        # it - the session still stops, but nothing on disk is touched.
+        session = db_install_session_handler.add_session(
+            InstallSession(
+                rom_id=win_rom.id,
+                user_id=admin_user.id,
+                state=InstallSessionState.INSTALLING,
+            )
+        )
+        cache_dir = install_cache_root / str(session.id)
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "partial.bin").write_bytes(b"incomplete")
+
+        r = client.post(
+            f"/api/roms/{win_rom.id}/install/cancel?clear_cache=false",
+            headers=_auth(access_token),
+        )
+        assert r.status_code == status.HTTP_200_OK
+        assert r.json()["state"] == InstallSessionState.FAILED.value
+        assert cache_dir.exists()
+        assert (cache_dir / "partial.bin").is_file()
+
 
 class TestInstallWorkerStatus:
     def test_reports_unavailable_by_default(

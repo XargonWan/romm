@@ -159,6 +159,8 @@
   "install-clear-cache": "Svuota cache di installazione",
   "install-clear-cache-disabled-hint": "Attendi il termine dell'installazione",
   "install-confirm-abort-body": "Questa azione interrompe l'installazione in corso ed elimina definitivamente i file copiati finora. Non può essere annullata.",
+  "install-confirm-abort-choice-body": "Questo interrompe l'installazione. Puoi mantenere ciò che è già stato scaricato per ispezionarlo o riprenderlo più tardi, oppure cancellarlo ora.",
+  "install-confirm-abort-choice-title": "Interrompere l'installazione?",
   "install-confirm-abort-title": "Interrompere l'installazione?",
   "install-confirm-clear-body": "Questa azione elimina definitivamente la cache dei file di installazione per questo gioco e non può essere annullata.",
   "install-confirm-clear-title": "Svuotare la cache di installazione?",

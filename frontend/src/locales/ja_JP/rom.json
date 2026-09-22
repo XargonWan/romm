@@ -159,6 +159,8 @@
   "install-clear-cache": "インストールキャッシュを削除",
   "install-clear-cache-disabled-hint": "インストールの完了をお待ちください",
   "install-confirm-abort-body": "実行中のインストールを中止し、これまでにコピーされたファイルを完全に削除します。この操作は元に戻せません。",
+  "install-confirm-abort-choice-body": "インストールを停止します。すでにダウンロードされたものを後で確認・再開するために保持するか、今すぐ消去できます。",
+  "install-confirm-abort-choice-title": "インストールを停止しますか?",
   "install-confirm-abort-title": "インストールを中止しますか?",
   "install-confirm-clear-body": "このゲームのキャッシュされたインストールファイルを完全に削除します。この操作は元に戻せません。",
   "install-confirm-clear-title": "インストールキャッシュを削除しますか?",

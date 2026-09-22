@@ -26,6 +26,7 @@ vi.mock("@/services/api/install", () => ({
   default: {
     getInstallSession: vi.fn(),
     clearInstallCache: vi.fn(),
+    cancelInstall: vi.fn(),
   },
 }));
 
@@ -284,5 +285,55 @@ describe("useInstallSession confirmClearIfInstalled", () => {
     expect(installApi.clearInstallCache).not.toHaveBeenCalled();
     // Declining doesn't wipe the still-valid existing session either.
     expect(install.session.value).toEqual(doneSession);
+  });
+});
+
+describe("useInstallSession cancelInstall", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    storeAuth().user = {
+      oauth_scopes: ["roms.install"],
+    } as unknown as User;
+    vi.mocked(installApi.cancelInstall).mockReset();
+    vi.mocked(installApi.cancelInstall).mockResolvedValue({
+      data: { id: 1, rom_id: rom.id, state: "failed" },
+    } as never);
+  });
+
+  afterEach(() => {
+    wrapper?.unmount();
+    wrapper = null;
+  });
+
+  it("stops without clearing when the user picks Keep on the first prompt", async () => {
+    // "Keep existing files" is the confirm-slot (default) button - same
+    // dangerSide layout as confirmClearIfInstalled's own first prompt.
+    const install = withComposableAndConfirm(true);
+
+    await install.cancelInstall();
+
+    expect(installApi.cancelInstall).toHaveBeenCalledWith(rom.id, {
+      clearCache: false,
+    });
+  });
+
+  it("clears the cache when the user picks Clear on both prompts", async () => {
+    // First prompt: "Clear install cache" is the cancel-slot button, so
+    // answering false picks it. Second prompt is the typed-DELETE one.
+    const install = withComposableAndConfirm(false, true);
+
+    await install.cancelInstall();
+
+    expect(installApi.cancelInstall).toHaveBeenCalledWith(rom.id, {
+      clearCache: true,
+    });
+  });
+
+  it("does nothing when the user backs out of the typed confirmation", async () => {
+    const install = withComposableAndConfirm(false, false);
+
+    await install.cancelInstall();
+
+    expect(installApi.cancelInstall).not.toHaveBeenCalled();
   });
 });

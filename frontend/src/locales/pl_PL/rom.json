@@ -159,6 +159,8 @@
   "install-clear-cache": "Wyczyść pamięć podręczną instalacji",
   "install-clear-cache-disabled-hint": "Poczekaj na zakończenie instalacji",
   "install-confirm-abort-body": "Spowoduje to przerwanie trwającej instalacji i trwałe usunięcie dotychczas skopiowanych plików. Tej operacji nie można cofnąć.",
+  "install-confirm-abort-choice-body": "To zatrzyma instalację. Możesz zachować to, co już zostało pobrane, aby sprawdzić lub kontynuować później, albo wyczyścić to teraz.",
+  "install-confirm-abort-choice-title": "Zatrzymać instalację?",
   "install-confirm-abort-title": "Przerwać instalację?",
   "install-confirm-clear-body": "Spowoduje to trwałe usunięcie zapisanych plików instalacyjnych tej gry. Tej operacji nie można cofnąć.",
   "install-confirm-clear-title": "Wyczyścić pamięć podręczną instalacji?",

@@ -401,14 +401,25 @@ async def clear_install_session(
 async def cancel_install_session(
     request: Request,
     id: Annotated[int, PathVar(description="Rom internal id.", ge=1)],
+    clear_cache: bool = True,
 ) -> InstallSessionSchema:
-    """Abort a running install and clear whatever partial cache it left.
+    """Abort a running install, optionally clearing whatever partial cache
+    it left.
 
     Best-effort: asks RQ to stop the job if a worker is still actually
-    working on it, then unconditionally marks the session FAILED and clears
-    its cache directory regardless of whether that reached a live worker -
-    RQ kills the job's whole process group outright (SIGKILL), so there's no
-    graceful in-job cleanup to wait for; this call is the cleanup.
+    working on it, then unconditionally marks the session FAILED - RQ kills
+    the job's whole process group outright (SIGKILL), so there's no graceful
+    in-job cleanup to wait for; this call (or a later, separate
+    `DELETE /{id}/install`) is the cleanup.
+
+    `clear_cache` (default True, matching this endpoint's original
+    behavior) controls whether that cleanup happens now: a client that asks
+    the user "keep the partial download or clear it?" before calling this
+    (see the web UI's own two-step abort confirmation) passes False when
+    the user chose to keep it - the session and its on-disk files are left
+    exactly as they were, just no longer running, so pressing Install again
+    later gets the normal "already has a cache" choice instead of silently
+    losing whatever had already downloaded.
     """
     rom = db_rom_handler.get_rom(id)
     if not rom:
@@ -429,7 +440,8 @@ async def cancel_install_session(
         except Exception as e:  # noqa: BLE001 - the job may already be gone
             log.debug(f"Couldn't send stop command for job {session.job_id}: {e}")
 
-    clear_session_cache(session.id)
+    if clear_cache:
+        clear_session_cache(session.id)
     session = db_install_session_handler.update_session(
         session.id,
         {

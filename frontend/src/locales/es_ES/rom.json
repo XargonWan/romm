@@ -159,6 +159,8 @@
   "install-clear-cache": "Borrar caché de instalación",
   "install-clear-cache-disabled-hint": "Espera a que termine la instalación",
   "install-confirm-abort-body": "Esto interrumpe la instalación en curso y elimina permanentemente los archivos copiados hasta ahora. Esta acción no se puede deshacer.",
+  "install-confirm-abort-choice-body": "Esto detiene la instalación. Puedes conservar lo que ya se ha descargado para inspeccionarlo o continuar más tarde, o borrarlo ahora.",
+  "install-confirm-abort-choice-title": "¿Detener la instalación?",
   "install-confirm-abort-title": "¿Interrumpir la instalación?",
   "install-confirm-clear-body": "Esto elimina permanentemente los archivos de instalación en caché de este juego. Esta acción no se puede deshacer.",
   "install-confirm-clear-title": "¿Borrar la caché de instalación?",

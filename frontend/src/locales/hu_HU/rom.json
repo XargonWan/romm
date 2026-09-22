@@ -159,6 +159,8 @@
   "install-clear-cache": "Telepítési gyorsítótár törlése",
   "install-clear-cache-disabled-hint": "Várja meg a telepítés befejezését",
   "install-confirm-abort-body": "Ez megszakítja a folyamatban lévő telepítést, és véglegesen törli az eddig másolt fájlokat. A művelet nem vonható vissza.",
+  "install-confirm-abort-choice-body": "Ez leállítja a telepítést. Megtarthatja a már letöltötteket későbbi ellenőrzéshez vagy folytatáshoz, vagy törölheti most.",
+  "install-confirm-abort-choice-title": "Leállítja a telepítést?",
   "install-confirm-abort-title": "Megszakítja a telepítést?",
   "install-confirm-clear-body": "Ez véglegesen törli a játékhoz tárolt telepítési fájlokat. A művelet nem vonható vissza.",
   "install-confirm-clear-title": "Törli a telepítési gyorsítótárat?",

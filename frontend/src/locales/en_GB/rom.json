@@ -159,6 +159,8 @@
   "install-clear-cache": "Clear install cache",
   "install-clear-cache-disabled-hint": "Wait for the install to finish first",
   "install-confirm-abort-body": "This aborts the running install and permanently deletes any files copied so far. This can't be undone.",
+  "install-confirm-abort-choice-body": "This stops the install. You can keep whatever was already downloaded to inspect or resume later, or clear it now.",
+  "install-confirm-abort-choice-title": "Stop installing?",
   "install-confirm-abort-title": "Abort install?",
   "install-confirm-clear-body": "This permanently deletes the cached install files for this game. This can't be undone.",
   "install-confirm-clear-title": "Clear install cache?",

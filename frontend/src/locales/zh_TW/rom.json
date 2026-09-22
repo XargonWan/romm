@@ -159,6 +159,8 @@
   "install-clear-cache": "清除安裝快取",
   "install-clear-cache-disabled-hint": "請等待安裝完成",
   "install-confirm-abort-body": "此操作將中止正在進行的安裝，並永久刪除目前為止已複製的檔案，且無法復原。",
+  "install-confirm-abort-choice-body": "這將停止安裝。您可以保留已下載的內容以便稍後檢查或繼續，也可以現在清除它。",
+  "install-confirm-abort-choice-title": "停止安裝？",
   "install-confirm-abort-title": "中止安裝?",
   "install-confirm-clear-body": "此操作將永久刪除此遊戲已快取的安裝檔案，且無法復原。",
   "install-confirm-clear-title": "清除安裝快取?",

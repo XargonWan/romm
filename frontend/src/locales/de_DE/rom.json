@@ -159,6 +159,8 @@
   "install-clear-cache": "Installations-Cache leeren",
   "install-clear-cache-disabled-hint": "Bitte warten, bis die Installation abgeschlossen ist",
   "install-confirm-abort-body": "Dadurch wird die laufende Installation abgebrochen und alle bisher kopierten Dateien werden dauerhaft gelöscht. Dies kann nicht rückgängig gemacht werden.",
+  "install-confirm-abort-choice-body": "Dadurch wird die Installation gestoppt. Du kannst das bereits Heruntergeladene behalten, um es später zu prüfen oder fortzusetzen, oder es jetzt löschen.",
+  "install-confirm-abort-choice-title": "Installation stoppen?",
   "install-confirm-abort-title": "Installation abbrechen?",
   "install-confirm-clear-body": "Dadurch werden die zwischengespeicherten Installationsdateien für dieses Spiel dauerhaft gelöscht. Dies kann nicht rückgängig gemacht werden.",
   "install-confirm-clear-title": "Installations-Cache leeren?",

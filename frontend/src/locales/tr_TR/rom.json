@@ -159,6 +159,8 @@
   "install-clear-cache": "Yükleme önbelleğini temizle",
   "install-clear-cache-disabled-hint": "Yüklemenin bitmesini bekleyin",
   "install-confirm-abort-body": "Bu işlem, devam eden yüklemeyi durdurur ve şimdiye kadar kopyalanan dosyaları kalıcı olarak siler. Bu işlem geri alınamaz.",
+  "install-confirm-abort-choice-body": "Bu, kurulumu durdurur. Zaten indirilenleri daha sonra incelemek veya devam etmek üzere saklayabilir ya da şimdi temizleyebilirsiniz.",
+  "install-confirm-abort-choice-title": "Kurulum durdurulsun mu?",
   "install-confirm-abort-title": "Yükleme durdurulsun mu?",
   "install-confirm-clear-body": "Bu işlem, bu oyun için önbelleğe alınmış yükleme dosyalarını kalıcı olarak siler. Bu işlem geri alınamaz.",
   "install-confirm-clear-title": "Yükleme önbelleği temizlensin mi?",

@@ -52,8 +52,10 @@ async function clearInstallCache(romId: number) {
   return api.delete(`/roms/${romId}/install`);
 }
 
-async function cancelInstall(romId: number) {
-  return api.post<InstallSessionSchema>(`/roms/${romId}/install/cancel`);
+async function cancelInstall(romId: number, { clearCache = true } = {}) {
+  return api.post<InstallSessionSchema>(
+    `/roms/${romId}/install/cancel?clear_cache=${clearCache}`,
+  );
 }
 
 /** Whether an install-sandbox worker is connected right now - drives whether

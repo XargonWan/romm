@@ -159,6 +159,8 @@
   "install-clear-cache": "Golește cache-ul de instalare",
   "install-clear-cache-disabled-hint": "Așteaptă finalizarea instalării",
   "install-confirm-abort-body": "Aceasta întrerupe instalarea în curs și șterge definitiv fișierele copiate până acum. Acțiunea nu poate fi anulată.",
+  "install-confirm-abort-choice-body": "Aceasta oprește instalarea. Poți păstra ceea ce a fost deja descărcat pentru a-l inspecta sau relua mai târziu, sau îl poți șterge acum.",
+  "install-confirm-abort-choice-title": "Oprești instalarea?",
   "install-confirm-abort-title": "Întrerupi instalarea?",
   "install-confirm-clear-body": "Aceasta șterge definitiv fișierele de instalare stocate în cache pentru acest joc. Acțiunea nu poate fi anulată.",
   "install-confirm-clear-title": "Golești cache-ul de instalare?",

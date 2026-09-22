@@ -159,6 +159,8 @@
   "install-clear-cache": "清除安装缓存",
   "install-clear-cache-disabled-hint": "请等待安装完成",
   "install-confirm-abort-body": "此操作将中止正在进行的安装，并永久删除到目前为止已复制的文件，且无法撤销。",
+  "install-confirm-abort-choice-body": "这将停止安装。您可以保留已下载的内容以便稍后检查或继续，也可以现在清除它。",
+  "install-confirm-abort-choice-title": "停止安装？",
   "install-confirm-abort-title": "中止安装?",
   "install-confirm-clear-body": "此操作将永久删除该游戏已缓存的安装文件，且无法撤销。",
   "install-confirm-clear-title": "清除安装缓存?",

@@ -412,24 +412,13 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     }
   }
 
-  /** Abort a running install (any active state, not just once the VNC bridge
-   *  is up) and clear whatever partial cache it left. Destructive and
-   *  touches the filesystem, so it goes through a typed-confirm gate. */
-  async function cancelInstall() {
-    const rom = getRom();
-    if (!rom) return;
-    const ok = await confirm({
-      title: t("rom.install-confirm-abort-title"),
-      body: t("rom.install-confirm-abort-body"),
-      confirmText: t("rom.install-abort"),
-      tone: "danger",
-      requireTyped: "DELETE",
-    });
-    if (!ok) return;
-
+  /** Actually calls the cancel endpoint and updates local state - shared by
+   *  both branches of cancelInstall() below so the API call, session
+   *  update, and snackbar only exist in one place. */
+  async function doCancel(rom: SimpleRom, clearCache: boolean) {
     cancelling.value = true;
     try {
-      const { data } = await installApi.cancelInstall(rom.id);
+      const { data } = await installApi.cancelInstall(rom.id, { clearCache });
       session.value = data;
       stopPolling();
       snackbar.success(t("rom.install-snackbar-aborted"), {
@@ -443,6 +432,41 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     } finally {
       cancelling.value = false;
     }
+  }
+
+  /** Abort a running install (any active state, not just once the VNC
+   *  bridge is up). Two steps, same shape as confirmClearIfInstalled: an
+   *  install can already have real, useful bytes on disk by the time
+   *  someone aborts it, so stopping it must not automatically imply
+   *  throwing that away too - the light first prompt asks what to do with
+   *  it; the destructive typed-DELETE one only shows up if they choose to
+   *  clear it. */
+  async function cancelInstall() {
+    const rom = getRom();
+    if (!rom) return;
+
+    const wantsToKeep = await confirm({
+      title: t("rom.install-confirm-abort-choice-title"),
+      body: t("rom.install-confirm-abort-choice-body"),
+      confirmText: t("rom.install-keep-cache"),
+      cancelText: t("rom.install-clear-cache"),
+      tone: "danger",
+      dangerSide: "cancel",
+    });
+    if (wantsToKeep) {
+      await doCancel(rom, false);
+      return;
+    }
+
+    const ok = await confirm({
+      title: t("rom.install-confirm-abort-title"),
+      body: t("rom.install-confirm-abort-body"),
+      confirmText: t("rom.install-abort"),
+      tone: "danger",
+      requireTyped: "DELETE",
+    });
+    if (!ok) return;
+    await doCancel(rom, true);
   }
 
   /** Offers to clear whatever cache already exists for this ROM right

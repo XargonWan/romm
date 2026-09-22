@@ -159,6 +159,8 @@
   "install-clear-cache": "Vymazat mezipaměť instalace",
   "install-clear-cache-disabled-hint": "Nejprve počkejte na dokončení instalace",
   "install-confirm-abort-body": "Tímto se přeruší probíhající instalace a trvale se odstraní veškeré dosud zkopírované soubory. Tuto akci nelze vrátit zpět.",
+  "install-confirm-abort-choice-body": "Tímto se instalace zastaví. Můžete zachovat vše, co již bylo staženo, pro pozdější prohlédnutí nebo pokračování, nebo to nyní vymazat.",
+  "install-confirm-abort-choice-title": "Zastavit instalaci?",
   "install-confirm-abort-title": "Přerušit instalaci?",
   "install-confirm-clear-body": "Tímto se trvale odstraní uložené instalační soubory této hry. Tuto akci nelze vrátit zpět.",
   "install-confirm-clear-title": "Vymazat mezipaměť instalace?",

@@ -159,6 +159,8 @@
   "install-clear-cache": "Vider le cache d'installation",
   "install-clear-cache-disabled-hint": "Attendez la fin de l'installation",
   "install-confirm-abort-body": "Cette action interrompt l'installation en cours et supprime définitivement les fichiers déjà copiés. Elle est irréversible.",
+  "install-confirm-abort-choice-body": "Cela arrête l'installation. Vous pouvez conserver ce qui a déjà été téléchargé pour l'inspecter ou reprendre plus tard, ou l'effacer maintenant.",
+  "install-confirm-abort-choice-title": "Arrêter l'installation ?",
   "install-confirm-abort-title": "Interrompre l'installation ?",
   "install-confirm-clear-body": "Cette action supprime définitivement les fichiers d'installation mis en cache pour ce jeu. Elle est irréversible.",
   "install-confirm-clear-title": "Vider le cache d'installation ?",
