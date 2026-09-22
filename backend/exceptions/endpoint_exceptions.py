@@ -46,6 +46,20 @@ class InstallSessionRunningException(Exception):
         return self.message
 
 
+class InstallSessionHasViewersException(Exception):
+    def __init__(self, rom_id, viewer_count: int):
+        self.message = (
+            f"Install cache for rom '{rom_id}' is currently being downloaded "
+            f"by {viewer_count} client(s); wait for them to finish before "
+            "clearing it"
+        )
+        super().__init__(self.message)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=self.message)
+
+    def __repr__(self) -> str:
+        return self.message
+
+
 class InstallSessionNotActiveException(Exception):
     def __init__(self, rom_id):
         self.message = f"No running install for rom '{rom_id}' to cancel"

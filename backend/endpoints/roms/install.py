@@ -32,6 +32,7 @@ from endpoints.responses.install import (
 )
 from exceptions.endpoint_exceptions import (
     InstallConcurrencyLimitException,
+    InstallSessionHasViewersException,
     InstallSessionNotActiveException,
     InstallSessionNotFoundException,
     InstallSessionRunningException,
@@ -103,6 +104,30 @@ def _session_schema(rom_id: int, session: InstallSession) -> InstallSessionSchem
     return schema
 
 
+def _resolve_session(
+    rom_id: int, user_id: int, session_id: int | None
+) -> InstallSession | None:
+    """The session a read endpoint should serve.
+
+    A caller that already has a session id (it started or discovered this
+    exact attempt earlier) gets pinned to it, so it keeps reading that
+    attempt's own cache directory even if a newer, unrelated attempt for the
+    same ROM starts in the meantime - without this, every read endpoint here
+    resolved "the latest session for this ROM+user" implicitly, so a second
+    client (or the same one, pressing Install again after the first attempt
+    already finished) would silently yank a still-streaming client onto a
+    brand new, empty session and 404 it. A first-time caller with no id yet
+    (the web UI's own "just opened /rom/{id}/install" case, and this is the
+    default for every existing client/route) still gets the latest one.
+    """
+    if session_id is not None:
+        session = db_install_session_handler.get_session(session_id)
+        if session is None or session.rom_id != rom_id or session.user_id != user_id:
+            return None
+        return session
+    return db_install_session_handler.get_latest_session_for_rom(rom_id, user_id)
+
+
 @protected_route(
     router.get,
     "/{id}/install/candidates",
@@ -118,10 +143,14 @@ async def get_install_candidates(
     Returns a ranked list of files that could serve as the installer entry
     point. When nothing is detected the client must present a manual file
     picker. Non-Windows platforms are flagged for direct stream-copy instead.
-    """
-    if not has_install_worker():
-        raise InstallWorkerUnavailableException()
 
+    Purely a filesystem scan (`fs_rom_handler.get_installer_candidates`) -
+    no job is enqueued here, so this doesn't need (and must not require) an
+    install-sandbox worker to be connected. Manual mode (AWAITING_INSTALLER,
+    see `start_install_session`) is meant to work without one; gating this
+    listing behind `has_install_worker()` would defeat that for any client
+    that fetches candidates before/without ever calling `POST /install`.
+    """
     rom = db_rom_handler.get_rom(id)
     if not rom:
         raise RomNotFoundInDatabaseException(id)
@@ -302,16 +331,17 @@ async def start_install_session(
 async def get_install_session(
     request: Request,
     id: Annotated[int, PathVar(description="Rom internal id.", ge=1)],
+    session_id: int | None = None,
 ) -> InstallSessionSchema:
-    """Return the latest install session for this user+ROM, if any."""
+    """Return an install session for this user+ROM: a specific one if
+    `session_id` is given (see `_resolve_session`), otherwise the latest.
+    """
     rom = db_rom_handler.get_rom(id)
     if not rom:
         raise RomNotFoundInDatabaseException(id)
     assert_rom_visible(request, rom)
 
-    session = db_install_session_handler.get_latest_session_for_rom(
-        rom.id, request.user.id
-    )
+    session = _resolve_session(rom.id, request.user.id, session_id)
     if not session:
         raise InstallSessionNotFoundException(id)
     return _session_schema(rom.id, session)
@@ -331,6 +361,14 @@ async def clear_install_session(
 
     Backs the "Clear Install Cache" action. Deletes the on-disk cache directory
     and the session row so a fresh install can start clean.
+
+    Refuses (409) while another client is actively streaming from this exact
+    session (see handler.install.stream_presence - the same heartbeat the
+    "N viewers" counter already uses), not just while the install itself is
+    still running: a DONE session's cache is exactly what a client keeps
+    pulling from after the install finished, and deleting the files out from
+    under an in-flight download is destructive regardless of the session's
+    own state.
     """
     rom = db_rom_handler.get_rom(id)
     if not rom:
@@ -344,6 +382,9 @@ async def clear_install_session(
         raise InstallSessionNotFoundException(id)
     if session.state in RUNNING_INSTALL_STATES:
         raise InstallSessionRunningException(id)
+    viewer_count = await stream_presence.count_viewers(session.id)
+    if viewer_count > 0:
+        raise InstallSessionHasViewersException(id, viewer_count)
 
     clear_session_cache(session.id)
     db_install_session_handler.delete_session(session.id)
@@ -740,22 +781,22 @@ async def install_vnc_ws(
 async def get_install_files(
     request: Request,
     id: Annotated[int, PathVar(description="Rom internal id.", ge=1)],
+    session_id: int | None = None,
 ) -> InstallFilesSchema:
     """List the files a finished install produced, with their sha1 hashes.
 
     A client downloads each one from GET .../install/files/{path} and
     compares the hash against its own copy to catch a corrupted transfer.
     404s until the session reaches a state that actually wrote a manifest
-    (DONE; a run that FAILED partway never gets one).
+    (DONE; a run that FAILED partway never gets one). Pass `session_id` to
+    pin to a specific attempt (see `_resolve_session`).
     """
     rom = db_rom_handler.get_rom(id)
     if not rom:
         raise RomNotFoundInDatabaseException(id)
     assert_rom_visible(request, rom)
 
-    session = db_install_session_handler.get_latest_session_for_rom(
-        rom.id, request.user.id
-    )
+    session = _resolve_session(rom.id, request.user.id, session_id)
     if not session:
         raise InstallSessionNotFoundException(id)
 
@@ -783,21 +824,22 @@ async def download_install_file(
     request: Request,
     id: Annotated[int, PathVar(description="Rom internal id.", ge=1)],
     file_path: str,
+    device_id: str = "web",
+    session_id: int | None = None,
 ) -> Response:
     """Download one file from a finished install.
 
     `file_path` must be an exact entry in the session's manifest: anything
     else 404s before ever touching the filesystem, so this can't be used to
-    read outside the session's own cache directory.
+    read outside the session's own cache directory. Pass `session_id` to pin
+    to a specific attempt (see `_resolve_session`).
     """
     rom = db_rom_handler.get_rom(id)
     if not rom:
         raise RomNotFoundInDatabaseException(id)
     assert_rom_visible(request, rom)
 
-    session = db_install_session_handler.get_latest_session_for_rom(
-        rom.id, request.user.id
-    )
+    session = _resolve_session(rom.id, request.user.id, session_id)
     if not session:
         raise InstallSessionNotFoundException(id)
 
@@ -805,6 +847,8 @@ async def download_install_file(
     entry = find_manifest_entry(entries, file_path) if entries else None
     if not entry:
         raise InstallSessionNotFoundException(id)
+
+    await stream_presence.heartbeat(session.id, request.user.id, device_id)
 
     if DEV_MODE:
         return FileResponse(
@@ -862,6 +906,7 @@ def _parse_range(
 async def get_install_stream_manifest(
     request: Request,
     id: Annotated[int, PathVar(description="Rom internal id.", ge=1)],
+    session_id: int | None = None,
 ) -> InstallStreamManifestSchema:
     """Live view of an install's output, whether it's still running or
     already finished - lets the Install page poll ONE endpoint regardless
@@ -872,15 +917,18 @@ async def get_install_stream_manifest(
     DONE, the same shape is synthesized from the real, fully-verified
     manifest instead, so a completed session's files never look different
     to a client just because it stopped polling and came back.
+
+    Pass `session_id` (the id a client already got back from starting or
+    discovering its own attempt) to keep reading that exact attempt's cache
+    even if a newer one for the same ROM starts in the meantime - see
+    `_resolve_session`. Omit it to just get the latest, as before.
     """
     rom = db_rom_handler.get_rom(id)
     if not rom:
         raise RomNotFoundInDatabaseException(id)
     assert_rom_visible(request, rom)
 
-    session = db_install_session_handler.get_latest_session_for_rom(
-        rom.id, request.user.id
-    )
+    session = _resolve_session(rom.id, request.user.id, session_id)
     if not session:
         raise InstallSessionNotFoundException(id)
 
@@ -922,6 +970,7 @@ async def download_install_stream_file(
     id: Annotated[int, PathVar(description="Rom internal id.", ge=1)],
     file_path: str,
     device_id: str = "web",
+    session_id: int | None = None,
 ) -> Response:
     """Download one file from an install, live if it's still running.
 
@@ -935,16 +984,19 @@ async def download_install_stream_file(
     that's the whole resume story, no session/token state needed for it.
 
     `file_path` must be an exact live- or final-manifest entry, same
-    traversal guard as the existing download endpoint.
+    traversal guard as the existing download endpoint. Pass `session_id` to
+    pin to a specific attempt (see `_resolve_session`) - a streaming client
+    should always pass the id of the session it's actually downloading from,
+    so a fresh, unrelated install attempt for the same ROM (a different
+    client, or the same one pressing Install again) can't yank it onto an
+    empty session and 404 it mid-download.
     """
     rom = db_rom_handler.get_rom(id)
     if not rom:
         raise RomNotFoundInDatabaseException(id)
     assert_rom_visible(request, rom)
 
-    session = db_install_session_handler.get_latest_session_for_rom(
-        rom.id, request.user.id
-    )
+    session = _resolve_session(rom.id, request.user.id, session_id)
     if not session:
         raise InstallSessionNotFoundException(id)
 
@@ -962,6 +1014,8 @@ async def download_install_stream_file(
         )
         if not final_entry:
             raise InstallSessionNotFoundException(id)
+
+        await stream_presence.heartbeat(session.id, request.user.id, device_id)
 
         if DEV_MODE:
             return FileResponse(
