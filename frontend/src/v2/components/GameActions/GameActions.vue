@@ -16,7 +16,7 @@ import { computed, onMounted, ref, toRef } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 import type { SimpleRom } from "@/stores/roms";
-import { isWindowsInstallableRom } from "@/utils";
+import { isInstallableRom } from "@/utils";
 import GameActionBtn from "@/v2/components/GameActions/GameActionBtn.vue";
 import MetricMenuBtn from "@/v2/components/GameActions/MetricMenuBtn.vue";
 import { METRICS } from "@/v2/components/GameActions/metrics";
@@ -50,15 +50,15 @@ const actions = useGameActions(() => romRef.value);
 // rather than becoming a separate "Reinstall" (see
 // confirmClearIfInstalled). Non-Windows ROMs never touch any of this -
 // Download behaves exactly as it always has.
-const isWindowsRom = computed(() => isWindowsInstallableRom(props.rom));
+const isInstallablePlatform = computed(() => isInstallableRom(props.rom));
 const install = useInstallSession(() => romRef.value);
 onMounted(() => {
-  if (!isWindowsRom.value) return;
+  if (!isInstallablePlatform.value) return;
   install.checkExisting();
 });
 
 const showInstallButton = computed(
-  () => isWindowsRom.value && install.isActive.value,
+  () => isInstallablePlatform.value && install.isActive.value,
 );
 
 const showDownloadOrInstall = ref(false);
@@ -125,7 +125,7 @@ useGridNav(rootEl, {
       action="download"
       :size="btnSize"
       variant="surface"
-      :on-download-click="isWindowsRom ? onDownloadClick : undefined"
+      :on-download-click="isInstallablePlatform ? onDownloadClick : undefined"
     />
     <InstallButton
       v-if="showInstallButton"
@@ -194,7 +194,7 @@ useGridNav(rootEl, {
     </template>
 
     <DownloadOrInstallDialog
-      v-if="isWindowsRom"
+      v-if="isInstallablePlatform"
       v-model="showDownloadOrInstall"
       @download="chooseDownload"
       @install="chooseInstall"

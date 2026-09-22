@@ -45,7 +45,7 @@ from handler.auth.dependencies import assert_rom_visible
 from handler.database import db_install_session_handler, db_rom_handler
 from handler.filesystem import fs_rom_handler
 from handler.filesystem.installer_detection import (
-    WINDOWS_INSTALLABLE_SLUGS,
+    INSTALLABLE_PLATFORM_SLUGS,
     pick_confident_installer,
 )
 from handler.install import bandwidth, stream_presence
@@ -156,7 +156,7 @@ async def get_install_candidates(
         raise RomNotFoundInDatabaseException(id)
     assert_rom_visible(request, rom)
 
-    is_windows = rom.platform.slug in WINDOWS_INSTALLABLE_SLUGS
+    is_installable = rom.platform.slug in INSTALLABLE_PLATFORM_SLUGS
 
     candidates = fs_rom_handler.get_installer_candidates(rom)
 
@@ -172,9 +172,10 @@ async def get_install_candidates(
             )
             for c in candidates
         ],
-        needs_manual_pick=is_windows and len(candidates) == 0,
-        # Non-Windows ROMs don't need an installer; the client stream-copies them.
-        stream_copy=not is_windows,
+        needs_manual_pick=is_installable and len(candidates) == 0,
+        # A ROM outside INSTALLABLE_PLATFORM_SLUGS doesn't need an installer;
+        # the client stream-copies it instead.
+        stream_copy=not is_installable,
     )
 
 
@@ -235,21 +236,21 @@ async def start_install_session(
     # accumulate a duplicate row per retry.
     existing = latest if latest and latest.state in ACTIVE_INSTALL_STATES else None
 
-    is_windows = rom.platform.slug in WINDOWS_INSTALLABLE_SLUGS
+    is_installable = rom.platform.slug in INSTALLABLE_PLATFORM_SLUGS
 
     installer_path = data.installer_path
-    if is_windows and installer_path is None:
+    if is_installable and installer_path is None:
         candidates = fs_rom_handler.get_installer_candidates(rom)
         confident = pick_confident_installer(candidates)
         if confident is not None:
             installer_path = confident.path
-    needs_manual_pick = is_windows and not installer_path
+    needs_manual_pick = is_installable and not installer_path
 
     # Resolved now (not left NULL for the worker to decide implicitly) so the
     # client can poll /install/proton/{id}/progress and show "Downloading
     # Proton X…" instead of a silent stall while the worker auto-downloads it
     # on first use - see resolve_effective_build's own docstring.
-    proton_build = resolve_effective_build(data.proton_build) if is_windows else None
+    proton_build = resolve_effective_build(data.proton_build) if is_installable else None
 
     initial_state = (
         InstallSessionState.AWAITING_INSTALLER
@@ -272,9 +273,9 @@ async def start_install_session(
     else:
         # Every session starts non-running regardless of platform: the
         # concurrency check below must count sessions already running, not
-        # this brand-new one. Flipping straight to STREAMING here for
-        # non-Windows ROMs would count this session against itself and
-        # reject every stream-copy install outright once
+        # this brand-new one. Flipping straight to STREAMING here for a ROM
+        # outside INSTALLABLE_PLATFORM_SLUGS would count this session
+        # against itself and reject every stream-copy install outright once
         # INSTALL_MAX_CONCURRENCY sessions (default 1) exist anywhere,
         # including itself.
         session = db_install_session_handler.add_session(
@@ -288,9 +289,10 @@ async def start_install_session(
             )
         )
 
-    # A Windows ROM with a resolved installer can start running immediately;
-    # one still awaiting a manual pick stays in AWAITING_INSTALLER. A
-    # non-Windows ROM has nothing to run, so it goes straight to copying.
+    # A ROM in INSTALLABLE_PLATFORM_SLUGS with a resolved installer can start
+    # running immediately; one still awaiting a manual pick stays in
+    # AWAITING_INSTALLER. A ROM outside that set has nothing to run, so it
+    # goes straight to copying.
     if needs_manual_pick:
         return _session_schema(rom.id, session)
 
@@ -306,7 +308,7 @@ async def start_install_session(
         db_install_session_handler.delete_session(session.id)
         raise InstallWorkerUnavailableException()
 
-    if is_windows:
+    if is_installable:
         job_id = enqueue_install(session.id)
         session = db_install_session_handler.update_session(
             session.id,

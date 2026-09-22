@@ -802,16 +802,20 @@ export function isNintendoDSRom(rom: DetailedRom | SimpleRom): boolean {
   return hasValidExtension || hasValidFile;
 }
 
-// Kept in sync with WINDOWS_INSTALLABLE_SLUGS in
-// backend/handler/filesystem/installer_detection.py.
-const WINDOWS_INSTALLABLE_SLUGS = ["win", "win3x", "win9x", "windows-apps"];
+// Kept in sync with INSTALLABLE_PLATFORM_SLUGS in
+// backend/handler/filesystem/installer_detection.py - only the Windows
+// family is implemented today, but this is a plain, appendable list (not a
+// single hardcoded "is this Windows" check) so a future platform's slug can
+// be added here once the backend actually knows how to install it.
+const INSTALLABLE_PLATFORM_SLUGS = ["win", "win3x", "win9x", "windows-apps"];
 
 /**
  * Check if a ROM's platform is a remote-install target (see the "Install"
- * button). Non-Windows platforms stream-copy instead of running an installer.
+ * button). A platform outside this list stream-copies instead of running
+ * an installer.
  */
-export function isWindowsInstallableRom(rom: DetailedRom | SimpleRom): boolean {
-  return WINDOWS_INSTALLABLE_SLUGS.includes(rom.platform_slug);
+export function isInstallableRom(rom: DetailedRom | SimpleRom): boolean {
+  return INSTALLABLE_PLATFORM_SLUGS.includes(rom.platform_slug);
 }
 
 export function calculateMainLayoutWidth() {

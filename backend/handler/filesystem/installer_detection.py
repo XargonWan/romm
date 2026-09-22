@@ -21,10 +21,19 @@ import fnmatch
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-# Platform slugs (UniversalPlatformSlug values) considered installable Windows
-# targets for the remote-install flow.
-WINDOWS_INSTALLABLE_SLUGS: frozenset[str] = frozenset(
-    ("win", "win3x", "win9x", "windows-apps")
+from handler.metadata.base_handler import UniversalPlatformSlug as UPS
+
+# Platform slugs the remote-install feature currently knows how to install.
+# Only the Windows family is implemented today (the runner drives everything
+# through a Wine/Proton sandbox - see handler.install.runner) - this is a
+# plain, appendable set rather than a single hardcoded "is this Windows"
+# check specifically so a future platform can be added here once its own
+# install runner exists, instead of that assumption being baked into every
+# call site. Adding a slug here alone is not enough on its own: runner.py's
+# actual install logic (bwrap + Wine/Proton) would still need a real
+# implementation for whatever new platform it is.
+INSTALLABLE_PLATFORM_SLUGS: frozenset[str] = frozenset(
+    (UPS.WIN, UPS.WIN3X, UPS.WIN9X, UPS.WINDOWS_APPS)
 )
 
 # Rank buckets.
