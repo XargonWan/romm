@@ -50,12 +50,17 @@ function withComposable() {
 // useConfirm() resolves `false` outright when no emitter is provided (see
 // its own code) - fine for tests that never need a real confirm dialog, but
 // confirmClearIfInstalled needs an actual round trip, so this variant wires
-// up a real `mitt()` emitter and answers every `showConfirm` with
-// `answer` the instant it's asked.
-function withComposableAndConfirm(answer: boolean) {
+// up a real `mitt()` emitter and answers each successive `showConfirm` with
+// the next value from `answers` (confirmClearIfInstalled shows up to two,
+// in order: "keep vs. clear", then, only if clear was picked, the typed
+// "Clear install cache?" confirmation).
+function withComposableAndConfirm(...answers: boolean[]) {
   const emitter: Emitter<Events> = mitt();
+  let next = 0;
   emitter.on("showConfirm", (payload) => {
-    emitter.emit("confirmResolved", { id: payload.id, confirmed: answer });
+    const confirmed = answers[next] ?? false;
+    next += 1;
+    emitter.emit("confirmResolved", { id: payload.id, confirmed });
   });
   let result!: ReturnType<typeof useInstallSession>;
   wrapper = mount(
@@ -232,11 +237,14 @@ describe("useInstallSession confirmClearIfInstalled", () => {
     expect(installApi.clearInstallCache).not.toHaveBeenCalled();
   });
 
-  it("clears the cache once the user confirms", async () => {
+  it("clears the cache once the user picks Clear on both prompts", async () => {
     vi.mocked(installApi.getInstallSession).mockResolvedValueOnce({
       data: doneSession,
     } as never);
-    const install = withComposableAndConfirm(true);
+    // First prompt: "Clear install cache" is the cancel-slot button (see
+    // confirmClearIfInstalled's own dangerSide usage), so answering false
+    // picks it. Second prompt is the typed-DELETE one; true confirms it.
+    const install = withComposableAndConfirm(false, true);
     await install.checkExisting();
     expect(install.hasCache.value).toBe(true);
 
@@ -247,11 +255,28 @@ describe("useInstallSession confirmClearIfInstalled", () => {
     expect(install.session.value).toBeNull();
   });
 
-  it("leaves the cache alone when the user declines", async () => {
+  it("leaves the cache alone when the user picks Keep on the first prompt", async () => {
     vi.mocked(installApi.getInstallSession).mockResolvedValueOnce({
       data: doneSession,
     } as never);
-    const install = withComposableAndConfirm(false);
+    // "Keep existing files" is the confirm-slot (default) button.
+    const install = withComposableAndConfirm(true);
+    await install.checkExisting();
+
+    await install.confirmClearIfInstalled();
+
+    expect(installApi.clearInstallCache).not.toHaveBeenCalled();
+    // Declining doesn't wipe the still-valid existing session either.
+    expect(install.session.value).toEqual(doneSession);
+  });
+
+  it("leaves the cache alone when the user backs out of the typed confirmation", async () => {
+    vi.mocked(installApi.getInstallSession).mockResolvedValueOnce({
+      data: doneSession,
+    } as never);
+    // Picks "Clear" on the first prompt, then declines the actual
+    // typed-DELETE step - the destructive action never actually happens.
+    const install = withComposableAndConfirm(false, false);
     await install.checkExisting();
 
     await install.confirmClearIfInstalled();

@@ -23,6 +23,13 @@ export interface ConfirmOptions {
   confirmText?: string;
   cancelText?: string;
   tone?: "warning" | "danger";
+  /** Which button gets `tone`'s color - defaults to "confirm" (the usual
+   *  "Cancel" (plain) / "Confirm" (colored) layout). Set to "cancel" when
+   *  the destructive option isn't the default/primary action - e.g. a
+   *  dialog whose safe default ("keep everything") should sit in the
+   *  confirm slot while the risky one ("delete it") is a red cancel-slot
+   *  button instead. */
+  dangerSide?: "confirm" | "cancel";
   /** When set, the confirm button stays disabled until the user types this
    *  exact value into the input. Use for filesystem-affecting actions. */
   requireTyped?: string;

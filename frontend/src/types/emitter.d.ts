@@ -131,6 +131,7 @@ export type Events = {
     confirmText?: string;
     cancelText?: string;
     tone?: "warning" | "danger";
+    dangerSide?: "confirm" | "cancel";
     requireTyped?: string;
   };
   confirmResolved: { id: number; confirmed: boolean };

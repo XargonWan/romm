@@ -11,6 +11,9 @@
 //             until the user types the matching string. Use for actions
 //             that touch filesystem (per the constitution).
 // Tone defaults to "warning"; pass "danger" for irreversible-and-serious.
+// The colored button is the confirm slot by default; pass
+// dangerSide: "cancel" to put the risky option on the plain-position side
+// instead, when the safe default belongs in the confirm slot.
 import { RBtn, RDialog, RTextField } from "@v2/lib";
 import type { Emitter } from "mitt";
 import {
@@ -37,8 +40,15 @@ const typed = ref("");
 const cancelButtonRef = ref<InstanceType<typeof RBtn> | null>(null);
 
 const tone = computed(() => payload.value?.tone ?? "warning");
-const confirmColor = computed(() =>
+const dangerColor = computed(() =>
   tone.value === "danger" ? "error" : "warning",
+);
+const dangerSide = computed(() => payload.value?.dangerSide ?? "confirm");
+const confirmColor = computed(() =>
+  dangerSide.value === "confirm" ? dangerColor.value : undefined,
+);
+const cancelColor = computed(() =>
+  dangerSide.value === "cancel" ? dangerColor.value : undefined,
 );
 const confirmDisabled = computed(() => {
   const required = payload.value?.requireTyped;
@@ -105,10 +115,16 @@ onBeforeUnmount(() => emitter?.off("showConfirm", onShow));
     </template>
     <template v-if="payload" #footer>
       <div class="r-confirm__actions">
-        <RBtn ref="cancelButtonRef" variant="text" @click="onCancel">
+        <RBtn
+          ref="cancelButtonRef"
+          :variant="cancelColor ? undefined : 'text'"
+          :color="cancelColor"
+          @click="onCancel"
+        >
           {{ payload.cancelText ?? t("common.cancel") }}
         </RBtn>
         <RBtn
+          :variant="confirmColor ? undefined : 'text'"
           :color="confirmColor"
           :disabled="confirmDisabled"
           @click="onConfirm"

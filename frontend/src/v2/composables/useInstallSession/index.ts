@@ -453,10 +453,32 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
    *  proceeds to install either way once this returns - clearing is
    *  optional, not a gate: a fresh attempt starts whether the user clears
    *  the old cache or keeps it, only the old cache's disk usage is at
-   *  stake either way. */
+   *  stake either way.
+   *
+   *  Two steps, not one: some installers are genuinely meant to be run more
+   *  than once against the same install - a patch on top of the base game,
+   *  for example - so pressing Install again must not immediately shove a
+   *  typed-DELETE confirmation in front of the user just to keep going.
+   *  The light first prompt asks what they actually want; the destructive
+   *  one only ever shows up if they explicitly chose to clear. */
   async function confirmClearIfInstalled(): Promise<void> {
     const rom = getRom();
     if (!rom || !hasCache.value) return;
+
+    // "Keep existing files" is the default, safe action - it sits in the
+    // confirm slot (primary position, plain color). "Clear install cache"
+    // is the risky one, so it's the red cancel-slot button instead of the
+    // usual primary-position action - see ConfirmDialog's own dangerSide.
+    const wantsToKeep = await confirm({
+      title: t("rom.install-confirm-reinstall-title"),
+      body: t("rom.install-confirm-reinstall-body"),
+      confirmText: t("rom.install-keep-cache"),
+      cancelText: t("rom.install-clear-cache"),
+      tone: "danger",
+      dangerSide: "cancel",
+    });
+    if (wantsToKeep) return;
+
     const ok = await confirm({
       title: t("rom.install-confirm-clear-title"),
       body: t("rom.install-confirm-clear-body"),
