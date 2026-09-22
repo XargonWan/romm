@@ -425,6 +425,25 @@ const downloadSpeedLimitLabel = computed(() =>
         >
           {{ t("rom.install-download-other-proton") }}
         </RBtn>
+
+        <RBtn
+          v-if="install.session.value"
+          block
+          variant="outlined"
+          size="small"
+          color="error"
+          prepend-icon="mdi-database-remove"
+          :loading="install.clearingCache.value"
+          :disabled="!install.hasCache.value"
+          :title="
+            install.hasCache.value
+              ? undefined
+              : t('rom.install-clear-cache-disabled-hint')
+          "
+          @click="install.clearCache"
+        >
+          {{ t("rom.install-clear-cache") }}
+        </RBtn>
       </div>
       <div class="r-v2-install__sidebar-foot">
         <div class="r-v2-install__meta">

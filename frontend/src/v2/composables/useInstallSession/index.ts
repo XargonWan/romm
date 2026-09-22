@@ -129,6 +129,7 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
   const checking = ref(false);
   const starting = ref(false);
   const cancelling = ref(false);
+  const clearingCache = ref(false);
   // Track in-progress Proton builds by id for live progress display.
   const downloadingBuilds = ref<Record<string, number>>({});
   // Whether an install-sandbox worker is connected right now - there's no
@@ -475,6 +476,42 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     }
   }
 
+  /** Standalone "Clear install cache" for the Install page's own settings
+   *  panel - unlike confirmClearIfInstalled (a silent pre-step folded into
+   *  starting a fresh install), this is a self-contained action a user picks
+   *  on its own, so it needs its own loading state and success feedback.
+   *  Mirrors FilesTab's own dedicated clear-cache button (same confirm
+   *  wording/typed-DELETE friction, same endpoint) since it's the same
+   *  destructive action either way. */
+  async function clearCache(): Promise<void> {
+    const rom = getRom();
+    if (!rom || !hasCache.value) return;
+    const ok = await confirm({
+      title: t("rom.install-confirm-clear-title"),
+      body: t("rom.install-confirm-clear-body"),
+      confirmText: t("rom.install-clear-cache"),
+      tone: "danger",
+      requireTyped: "DELETE",
+    });
+    if (!ok) return;
+
+    clearingCache.value = true;
+    try {
+      await installApi.clearInstallCache(rom.id);
+      session.value = null;
+      snackbar.success(t("rom.install-snackbar-cache-cleared"), {
+        icon: "mdi-check-bold",
+      });
+    } catch (err) {
+      snackbar.error(
+        t("rom.install-snackbar-clear-failed", { detail: errorDetail(err) }),
+        { icon: "mdi-alert-circle-outline" },
+      );
+    } finally {
+      clearingCache.value = false;
+    }
+  }
+
   onBeforeUnmount(() => {
     stopped = true;
     stopPolling();
@@ -492,6 +529,7 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     checking,
     starting,
     cancelling,
+    clearingCache,
     state,
     isRunning,
     isActive,
@@ -510,6 +548,7 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     startWithPath,
     cancelInstall,
     confirmClearIfInstalled,
+    clearCache,
   };
 }
 
