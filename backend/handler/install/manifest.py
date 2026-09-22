@@ -172,6 +172,8 @@ def scan_live_manifest(
     root: Path,
     candidates: Iterable[Path],
     previous: Mapping[str, LiveManifestEntry] | None = None,
+    *,
+    aggressive: bool = False,
 ) -> dict[str, LiveManifestEntry]:
     """One incremental pass over the installer's in-progress output.
 
@@ -192,6 +194,25 @@ def scan_live_manifest(
 
     `sealed_bytes` never regresses call-to-call, even if a size read is
     momentarily inconsistent with the last one.
+
+    `aggressive` (see handler.install.streaming_mode - off by default,
+    opt-in via Settings) skips the one-interval stability wait entirely and
+    seals a growing file's *entire current size* on every single scan. This
+    matters for one specific case the conservative rule handles badly: a
+    single large file written by a fast local copy (installer disk I/O is
+    essentially always faster than a client's own network link) can finish
+    growing within one scan interval, so it never gets a chance to show
+    incremental progress at all - a client just sees it "stuck" until the
+    whole file is done, defeating the point of streaming for exactly the
+    file it matters most for. The tradeoff: a client that reads a region the
+    installer hasn't actually flushed yet gets whatever garbage is
+    currently there, silently - there's no per-chunk hash here to catch it
+    (see above), only the final whole-file sha1 once the real install
+    finishes. That's an acceptable risk here specifically because a client
+    that gets burned by it ends up no worse off than if this flag didn't
+    exist at all: it would have downloaded that same file's bytes after the
+    fact anyway, so a mismatched hash just means redoing exactly the
+    download that would otherwise have happened later, not new lost work.
     """
     previous = previous or {}
     result: dict[str, LiveManifestEntry] = {}
@@ -203,7 +224,9 @@ def scan_live_manifest(
 
         rel_path = path.relative_to(root).as_posix()
         prior = previous.get(rel_path)
-        if prior is None:
+        if aggressive:
+            sealed_bytes = size
+        elif prior is None:
             sealed_bytes = 0
         elif prior.size_bytes == size:
             sealed_bytes = size

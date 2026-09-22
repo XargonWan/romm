@@ -18,7 +18,7 @@ from config import (
 )
 from config.config_manager import config_manager as cm
 from handler.database import db_save_handler
-from handler.install import bandwidth
+from handler.install import bandwidth, streaming_mode
 from handler.metadata.base_handler import (
     MAME_XML_KEY,
     METADATA_FIXTURES_DIR,
@@ -178,6 +178,12 @@ async def main() -> None:
         # an admin happened to re-save the setting.
         await bandwidth.set_bytes_per_second(
             cm.get_config().INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC
+        )
+        # Same idea for the experimental "stream uncompleted files" flag -
+        # it's also an ephemeral Redis mirror of a config.yml value, and
+        # otherwise would silently reset to disabled after a Redis restart.
+        streaming_mode.set_stream_uncompleted_files(
+            cm.get_config().INSTALL_STREAM_UNCOMPLETED_FILES
         )
 
         log.info("Initializing cache with fixtures data")

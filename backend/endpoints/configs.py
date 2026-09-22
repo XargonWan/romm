@@ -15,7 +15,7 @@ from decorators.auth import protected_route
 from endpoints.responses.config import ConfigResponse
 from exceptions.config_exceptions import ConfigNotWritableException
 from handler.auth.constants import Scope
-from handler.install import bandwidth
+from handler.install import bandwidth, streaming_mode
 from logger.logger import log
 from utils.router import APIRouter
 
@@ -113,10 +113,16 @@ class InstallSettingsPayload(BaseModel):
     ``"cachyos-latest"``) used for new Windows install sessions when the user
     hasn't explicitly chosen one. ``None`` falls back to the first build
     discovered on disk.
+
+    ``stream_uncompleted_files`` is the experimental "Stream uncompleted
+    files" toggle - see handler.install.manifest.scan_live_manifest's own
+    ``aggressive`` param for what it actually changes. ``None`` leaves it
+    unchanged.
     """
 
     download_speed_limit_bytes_per_sec: int | None = None
     default_proton_build: str | None = None
+    stream_uncompleted_files: bool | None = None
 
     @field_validator("download_speed_limit_bytes_per_sec")
     @classmethod
@@ -177,6 +183,7 @@ def get_config(request: Request) -> ConfigResponse:
         PEGASUS_AUTO_EXPORT_ON_SCAN=cfg.PEGASUS_AUTO_EXPORT_ON_SCAN,
         INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC=cfg.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC,
         INSTALL_DEFAULT_PROTON_BUILD=cfg.INSTALL_DEFAULT_PROTON_BUILD,
+        INSTALL_STREAM_UNCOMPLETED_FILES=cfg.INSTALL_STREAM_UNCOMPLETED_FILES,
     )
 
 
@@ -310,14 +317,18 @@ async def update_install_settings(
 ) -> None:
     """Replace the install.* section of the configuration.
 
-    Also pushes the new bandwidth cap into the live limiter (see
-    handler.install.bandwidth) so every worker process picks it up
-    immediately, not just the one that handled this request.
+    Also pushes the new bandwidth cap and the "stream uncompleted files"
+    flag into their respective live Redis mirrors (see
+    handler.install.bandwidth and handler.install.streaming_mode) so every
+    worker process - including the separate install-sandbox container -
+    picks up the change immediately, not just the one that handled this
+    request.
     """
     try:
         cm.update_install_settings(
             download_speed_limit_bytes_per_sec=payload.download_speed_limit_bytes_per_sec,
             default_proton_build=payload.default_proton_build,
+            stream_uncompleted_files=payload.stream_uncompleted_files,
         )
     except ConfigNotWritableException as exc:
         log.critical(exc.message)
@@ -326,3 +337,5 @@ async def update_install_settings(
         ) from exc
 
     await bandwidth.set_bytes_per_second(payload.download_speed_limit_bytes_per_sec)
+    if payload.stream_uncompleted_files is not None:
+        streaming_mode.set_stream_uncompleted_files(payload.stream_uncompleted_files)

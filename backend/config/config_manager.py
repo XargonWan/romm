@@ -211,6 +211,12 @@ class Config:
     # When None, the runner falls back to the first build discovered on disk.
     # When the chosen build isn't installed, it is auto-downloaded on first use.
     INSTALL_DEFAULT_PROTON_BUILD: str | None
+    # Experimental, off by default (see the Stream Install settings section):
+    # seal a growing file's entire current size on every live-manifest scan
+    # instead of waiting for it to hold steady first - see
+    # handler.install.manifest.scan_live_manifest's own `aggressive` param
+    # for the full tradeoff.
+    INSTALL_STREAM_UNCOMPLETED_FILES: bool
 
     def __init__(self, **entries):
         self.__dict__.update(entries)
@@ -552,6 +558,9 @@ class ConfigManager:
             INSTALL_DEFAULT_PROTON_BUILD=pydash.get(
                 self._raw_config, "install.default_proton_build", None
             ) or os.environ.get("INSTALL_DEFAULT_PROTON_BUILD") or None,
+            INSTALL_STREAM_UNCOMPLETED_FILES=pydash.get(
+                self._raw_config, "install.stream_uncompleted_files", False
+            ),
         )
 
     def _get_ejs_controls(self) -> dict[str, EjsControls]:
@@ -952,6 +961,9 @@ class ConfigManager:
                     self.config.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC
                 ),
                 "default_proton_build": self.config.INSTALL_DEFAULT_PROTON_BUILD,
+                "stream_uncompleted_files": (
+                    self.config.INSTALL_STREAM_UNCOMPLETED_FILES
+                ),
             },
         }
 
@@ -1082,6 +1094,7 @@ class ConfigManager:
         *,
         download_speed_limit_bytes_per_sec: int | None,
         default_proton_build: str | None = None,
+        stream_uncompleted_files: bool | None = None,
     ) -> None:
         """Set global install settings and persist them to config.yml.
 
@@ -1089,12 +1102,18 @@ class ConfigManager:
         by every concurrent install download (see handler.install.bandwidth).
         ``default_proton_build`` is the default Proton build id for new install
         sessions (None = fall back to first installed build on disk).
+        ``stream_uncompleted_files`` is the experimental "seal on write,
+        don't wait for stability" toggle (see
+        handler.install.manifest.scan_live_manifest's own ``aggressive``
+        param) - ``None`` leaves it unchanged, matching ``default_proton_build``.
         """
         self.config.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC = (
             download_speed_limit_bytes_per_sec
         )
         if default_proton_build is not None:
             self.config.INSTALL_DEFAULT_PROTON_BUILD = default_proton_build
+        if stream_uncompleted_files is not None:
+            self.config.INSTALL_STREAM_UNCOMPLETED_FILES = stream_uncompleted_files
         self._update_config_file()
 
 

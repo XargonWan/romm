@@ -51,6 +51,7 @@ from handler.install.proton_builds import (
     resolve_proton_path,
 )
 from handler.install.sandbox import SandboxSpec, build_bwrap_command
+from handler.install.streaming_mode import stream_uncompleted_files_enabled
 from handler.install.vnc import VncSession, start_vnc_session
 from handler.install.windows_output import (
     collect_windows_install_files,
@@ -574,7 +575,13 @@ def _live_manifest_loop(
                             continue  # transient (e.g. not sealed onto disk
                             # yet) - retry next scan
                     live_paths.append(dest)
-                state = scan_live_manifest(work_dir, live_paths, state)
+                # Checked fresh every scan (cheap, one Redis lookup) rather
+                # than once at loop start, so toggling the setting mid-install
+                # takes effect on the very next tick.
+                state = scan_live_manifest(
+                    work_dir, live_paths, state,
+                    aggressive=stream_uncompleted_files_enabled(),
+                )
                 write_live_manifest(work_dir, state)
         except OSError as e:
             log.warning(f"Live manifest scan failed, will retry: {e}")
