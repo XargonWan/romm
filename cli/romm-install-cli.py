@@ -25,23 +25,24 @@ resolves everything server-side, no client has to replicate the logic):
 
 Flow:
   1. login (HTTP Basic) -> session cookie
-  2. GET /api/roms/{romId}/install - already DONE? skip straight to step 6,
+  2. GET /api/roms/{romId}/install - already DONE? skip straight to step 5,
      no worker needed at all
-  3. GET /api/install/worker-status
-  4. GET /api/roms/{romId}/install/candidates (informational only - the
+  3. GET /api/roms/{romId}/install/candidates (informational only - the
      server does its own auto-pick, this is just to print the options)
-  5. POST /api/roms/{romId}/install {installer_path, proton_build, ttl_seconds}
+  4. POST /api/roms/{romId}/install {installer_path, proton_build, ttl_seconds}
      - installer_path is optional; omit it and let the server decide.
      AWAITING_INSTALLER in the response means manual mode - stop and print
-     `manual_install_url`
-  6. poll GET /api/roms/{romId}/install/stream/manifest every 3s, started in
-     a background thread concurrently with step 7's own polling - designed
+     `manual_install_url` (this outcome never touches the worker at all). A
+     transient 503 (worker not connected yet) is retried for ~50s instead of
+     failing outright, same as the web UI's own "Install" button.
+  5. poll GET /api/roms/{romId}/install/stream/manifest every 3s, started in
+     a background thread concurrently with step 6's own polling - designed
      to work *while* an install is still running too (that's the whole
      "stream install" point), not just once it's DONE, though only the
      finished-install path has actually been verified end-to-end so far
-  7. poll GET /api/roms/{romId}/install every 3s until state != active
-  8. stream each file via Range GET /api/roms/{romId}/install/stream/{path}
-  9. cancel: POST /api/roms/{romId}/install/cancel
+  6. poll GET /api/roms/{romId}/install every 3s until state != active
+  7. stream each file via Range GET /api/roms/{romId}/install/stream/{path}
+  8. cancel: POST /api/roms/{romId}/install/cancel
 """
 from __future__ import annotations
 
@@ -56,6 +57,7 @@ import sys
 import threading
 import time
 import urllib.error
+import uuid
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -63,6 +65,22 @@ from pathlib import Path
 POLL_INTERVAL = 3
 MANIFEST_INTERVAL = 3
 PROTON_POLL_INTERVAL = 2
+
+# Distinguishes this CLI process from a browser tab (or another CLI run) in
+# the server's own "N viewers currently downloading" presence tracking (see
+# handler.install.stream_presence) - without a distinct id here, every CLI
+# invocation would collapse into the same default "web" device and undercount
+# concurrent downloaders, since that presence system counts per (user,
+# device_id) pair specifically to tell separate clients apart.
+DEVICE_ID = f"cli-{uuid.uuid4().hex[:8]}"
+
+# A freshly (re)started install-sandbox worker takes real, bounded time to
+# come up (Wine/Proton warmup then Redis registration) before POST /install
+# can enqueue anything onto it - mirrors the web UI's own
+# withWorkerStartupRetry (frontend/src/v2/composables/useInstallSession).
+# ~50s total. Only matters for the auto-pick path that actually enqueues a
+# job - a manual-mode result (AWAITING_INSTALLER) never touches the worker.
+WORKER_STARTUP_RETRY_DELAYS = [2, 3, 5, 5, 5, 10, 10, 10]
 
 ACTIVE_STATES = {"detecting", "awaiting_installer", "installing", "streaming"}
 
@@ -198,6 +216,16 @@ def extract_error(content: bytes, status: int) -> str:
     return f"HTTP {status}: {content.decode(errors='replace')[:300]}"
 
 
+class ApiError(RuntimeError):
+    """A RuntimeError that also carries the HTTP status code, so a caller can
+    react to a specific status (e.g. 503 = install worker not connected yet,
+    worth retrying) without parsing the message text."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
 class RommClient:
     def __init__(self, c: Client):
         self.c = c
@@ -216,13 +244,6 @@ class RommClient:
         if status != 200:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
         return data
-
-    def worker_status(self) -> bool:
-        status, data = self.c.get_json("/api/roms/install/worker-status")
-        if status != 200:
-            warn(extract_error(json.dumps(data).encode(), status))
-            return False
-        return bool(data.get("available", False))
 
     def candidates(self, rom_id: int) -> dict:
         status, data = self.c.get_json(f"/api/roms/{rom_id}/install/candidates")
@@ -256,11 +277,14 @@ class RommClient:
             body["ttl_seconds"] = ttl
         status, data = self.c.post_json(f"/api/roms/{rom_id}/install", body)
         if status not in (200, 201):
-            raise RuntimeError(extract_error(json.dumps(data).encode(), status))
+            raise ApiError(status, extract_error(json.dumps(data).encode(), status))
         return data
 
-    def get_session(self, rom_id: int) -> dict:
-        status, data = self.c.get_json(f"/api/roms/{rom_id}/install")
+    def get_session(self, rom_id: int, session_id: int | None = None) -> dict:
+        endpoint = f"/api/roms/{rom_id}/install"
+        if session_id is not None:
+            endpoint += f"?session_id={session_id}"
+        status, data = self.c.get_json(endpoint)
         if status == 404:
             return {}
         if status != 200:
@@ -280,7 +304,7 @@ class RommClient:
         return data
 
     # -- streaming --------------------------------------------------------
-    def stream_manifest(self, rom_id: int) -> dict | None:
+    def stream_manifest(self, rom_id: int, session_id: int | None = None) -> dict | None:
         """Live view of the install's output so far, or None if there's
         nothing to show yet.
 
@@ -290,8 +314,19 @@ class RommClient:
         get_install_stream_manifest's own docstring). Either way, from a
         client streaming concurrently with the install, this just means
         "keep waiting" - not an error worth alarming anyone with.
+
+        Pass `session_id` (the id this client is already streaming from) to
+        stay pinned to that exact attempt - otherwise a fresh, unrelated
+        install started for the same ROM (a different client, or pressing
+        Install again after this one already finished) silently becomes
+        "the latest session" server-side and yanks this poll onto an empty
+        one, 404ing mid-download even though the files this client already
+        has are still sitting there, complete, on disk.
         """
-        status, data = self.c.get_json(f"/api/roms/{rom_id}/install/stream/manifest")
+        endpoint = f"/api/roms/{rom_id}/install/stream/manifest"
+        if session_id is not None:
+            endpoint += f"?session_id={session_id}"
+        status, data = self.c.get_json(endpoint)
         if status == 404:
             return None
         if status != 200:
@@ -299,7 +334,8 @@ class RommClient:
         return data
 
     def stream_file(self, rom_id: int, path: str, out_dir: Path,
-                    speed_limit: int | None = None) -> int:
+                    speed_limit: int | None = None,
+                    session_id: int | None = None) -> int:
         """Range-stream whatever is currently available for one file,
         resuming from wherever the local copy left off. Returns the file's
         total size on disk after this call (not just what was added now).
@@ -317,7 +353,11 @@ class RommClient:
         that isn't ready yet, on its next pass through the whole list.
         """
         encoded = urllib.parse.quote(path, safe="/")
-        endpoint = f"/api/roms/{rom_id}/install/stream/{encoded}"
+        params = {"device_id": DEVICE_ID}
+        if session_id is not None:
+            params["session_id"] = session_id
+        endpoint = (f"/api/roms/{rom_id}/install/stream/{encoded}"
+                   f"?{urllib.parse.urlencode(params)}")
         out_dir.mkdir(parents=True, exist_ok=True)
         dest = out_dir / path
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -359,7 +399,8 @@ class RommClient:
 
 def download_all_files(rom: RommClient, rom_id: int, out_dir: Path,
                        speed_limit: int | None = None,
-                       stop_event: threading.Event | None = None) -> int:
+                       stop_event: threading.Event | None = None,
+                       session_id: int | None = None) -> int:
     """Poll manifest and stream every file to out_dir. Returns total bytes.
 
     Works the same whether the install is still running or already DONE -
@@ -375,6 +416,14 @@ def download_all_files(rom: RommClient, rom_id: int, out_dir: Path,
     install failed - nothing more will ever seal) instead of retrying a
     dead session forever. A fresh one is used when not given, so the
     single-threaded (sequential, post-DONE) call site needs no special case.
+
+    `session_id`, when given, pins every request to that exact session
+    instead of "whatever's latest for this ROM" - without it, a fresh
+    install attempt started for the same ROM in the meantime (a different
+    client, or pressing Install again after this one already finished)
+    would silently become "latest" server-side and yank this loop onto an
+    empty session, 404ing mid-download even though every file already
+    pulled down is sitting there, complete and correct, on disk.
     """
     stop_event = stop_event or threading.Event()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -394,7 +443,7 @@ def download_all_files(rom: RommClient, rom_id: int, out_dir: Path,
                 break
         last_manifest = time.time()
         try:
-            manifest = rom.stream_manifest(rom_id)
+            manifest = rom.stream_manifest(rom_id, session_id=session_id)
         except RuntimeError as e:
             warn(str(e))
             if stop_event.wait(MANIFEST_INTERVAL):
@@ -440,7 +489,8 @@ def download_all_files(rom: RommClient, rom_id: int, out_dir: Path,
             # why that matters: a file the installer hasn't started writing
             # yet must never stall every other file in this same pass).
             try:
-                written = rom.stream_file(rom_id, path, out_dir, speed_limit=limit)
+                written = rom.stream_file(rom_id, path, out_dir, speed_limit=limit,
+                                          session_id=session_id)
             except RuntimeError as e:
                 # A connection drop here would otherwise crash this
                 # background thread with an unhandled traceback - the
@@ -472,8 +522,40 @@ def download_all_files(rom: RommClient, rom_id: int, out_dir: Path,
     return total
 
 
+def start_session_with_retry(rom: RommClient, rom_id: int, installer_path: str | None,
+                             proton_build: str | None, ttl: int | None) -> dict:
+    """POST /install, riding out a transient "install worker not connected"
+    503 instead of failing on it outright - same idea as the web UI's own
+    withWorkerStartupRetry. A manual-mode result (AWAITING_INSTALLER) never
+    raises this in the first place (the server returns it without ever
+    checking the worker), so this only kicks in for the auto-pick path that
+    actually needs to enqueue a job.
+
+    Each attempt is a real POST /install, so the 503 (or lack of one) on
+    every single retry reflects the server's own live has_install_worker()
+    check, not a cached guess - there's no richer "what's it doing" signal
+    to report while zero workers are registered (nothing is running yet to
+    be busy doing anything), so this reports elapsed time/attempt count
+    instead of pretending to know more. Once the worker registers and a
+    session actually starts, poll_session takes over and shows real state
+    (including Proton download/extract progress), same as the web UI.
+    """
+    start = time.time()
+    for attempt, delay in enumerate([0, *WORKER_STARTUP_RETRY_DELAYS]):
+        if delay:
+            time.sleep(delay)
+        try:
+            return rom.start_session(rom_id, installer_path, proton_build, ttl)
+        except ApiError as e:
+            if e.status != 503 or attempt == len(WORKER_STARTUP_RETRY_DELAYS):
+                raise
+            elapsed = int(time.time() - start)
+            warn(f"install worker not connected yet ({elapsed}s elapsed) - retrying...")
+    raise AssertionError("unreachable")
+
+
 def poll_session(rom: RommClient, rom_id: int, proton_build: str | None,
-                 timeout: float = 600.0) -> dict:
+                 timeout: float = 600.0, session_id: int | None = None) -> dict:
     """Poll session state until terminal or timeout. Prints progress.
 
     AWAITING_INSTALLER (server-side auto-pick couldn't confidently resolve
@@ -483,13 +565,16 @@ def poll_session(rom: RommClient, rom_id: int, proton_build: str | None,
     part of `timeout` here would just be dead time. `main()` normally
     catches this right after starting the session, before ever calling this
     function - the check stays here too for whoever calls this directly.
+
+    `session_id` pins polling to that exact session (see download_all_files's
+    own docstring for why) instead of whatever's latest for this ROM.
     """
     deadline = time.time() + timeout
     last_state = None
     announced_install_page = False
     install_page_url = f"{rom.c.base}/rom/{rom_id}/install"
     while time.time() < deadline:
-        session = rom.get_session(rom_id)
+        session = rom.get_session(rom_id, session_id=session_id)
         if not session:
             warn("no active session")
             time.sleep(POLL_INTERVAL)
@@ -524,17 +609,35 @@ def poll_session(rom: RommClient, rom_id: int, proton_build: str | None,
                     f"yet), open this to do that:")
                 log(f"  {install_page_url}")
                 announced_install_page = True
-            # Proton download progress during bootstrapping.
-            if proton_build and state == "installing" and not vnc_url:
-                prog, extracting = rom.proton_progress(proton_build)
+            # Proton download progress during bootstrapping. The session's
+            # own `proton_build` (resolved server-side at creation time, see
+            # resolve_effective_build) is the source of truth for which
+            # build is actually in play - the `--proton-build` CLI flag is
+            # usually omitted (letting the server auto-pick), so trusting
+            # only that arg meant this branch almost never fired even while
+            # the web UI's own Install page was showing real progress for
+            # the exact same session.
+            build_id = session.get("proton_build") or proton_build
+            if build_id and state == "installing" and not vnc_url:
+                prog, extracting = rom.proton_progress(build_id)
                 if prog is not None:
                     label = "extracting" if extracting else "downloading"
-                    log(f"  proton {label} {bar(prog)} {prog * 100:.0f}%")
+                    log(f"  proton {build_id} {label} {bar(prog)} {prog * 100:.0f}%")
             time.sleep(POLL_INTERVAL)
             continue
         # terminal
         if state == "done":
-            log("session DONE")
+            # Deliberately not "session DONE" or anything that reads as a
+            # final word: this only means the server-side install itself
+            # finished (every file already hashed and verified - see
+            # _finalize_install) - a concurrent background download of a
+            # large file can still be well behind that point locally. A
+            # caller (or a human watching this output) that took a bare
+            # "DONE" as "nothing left to do" and disconnected would silently
+            # end up with a truncated local copy of whatever hadn't been
+            # pulled yet.
+            log("install finished on the server (verified) - "
+                "any files not yet downloaded locally are still being pulled")
         elif state == "failed":
             warn(f"session FAILED: {session.get('error', '')}")
         elif state == "expired":
@@ -543,7 +646,7 @@ def poll_session(rom: RommClient, rom_id: int, proton_build: str | None,
             log(f"session state: {state}")
         return session
     warn("polling timed out")
-    return rom.get_session(rom_id)
+    return rom.get_session(rom_id, session_id=session_id)
 
 
 def main() -> int:
@@ -655,10 +758,6 @@ def _run(args: argparse.Namespace, rom: RommClient) -> int:
         log(f"already installed: session id={existing.get('id')} - streaming cached files")
         session = existing
     else:
-        if not rom.worker_status():
-            warn("install worker is not connected")
-            return 1
-
         cands = rom.candidates(args.rom_id)
         log(f"candidates: {len(cands.get('candidates', []))} "
             f"needs_manual_pick={cands.get('needs_manual_pick')} "
@@ -671,9 +770,12 @@ def _run(args: argparse.Namespace, rom: RommClient) -> int:
         # longer required - omit it and the server auto-picks the same way
         # the web UI's own "Install" button does (see
         # start_install_session's docstring). Only a genuinely ambiguous
-        # pick falls back to "manual mode", handled below.
-        session = rom.start_session(args.rom_id, args.installer_path,
-                                    args.proton_build, args.ttl)
+        # pick falls back to "manual mode", handled below. A transient 503
+        # (worker not connected yet) is retried, not a hard failure - manual
+        # mode itself never needs the worker at all, so this only ever
+        # matters when the server can auto-pick and needs to enqueue a job.
+        session = start_session_with_retry(rom, args.rom_id, args.installer_path,
+                                           args.proton_build, args.ttl)
         log(f"session started: id={session.get('id')} state={session.get('state')}")
 
         # Step 3: manual mode - the server couldn't confidently resolve an
@@ -688,6 +790,15 @@ def _run(args: argparse.Namespace, rom: RommClient) -> int:
             warn("re-run this CLI once it's running there to stream the result")
             return 1
 
+    # Pinned from here on: every remaining call passes this exact session id
+    # instead of letting the server resolve "whatever's latest for this ROM"
+    # each time - otherwise a fresh, unrelated install attempt for the same
+    # ROM (a different client, or pressing Install again once this one is
+    # already done) would silently become "latest" server-side and yank this
+    # very run onto an empty session mid-stream (see download_all_files's own
+    # docstring for the full story).
+    session_id = session.get("id")
+
     # Step 4: stream. Started concurrently with the install actually running
     # (a background thread), not after it finishes - "stream install" means
     # a client can already start pulling finished pieces of a file before
@@ -701,13 +812,14 @@ def _run(args: argparse.Namespace, rom: RommClient) -> int:
     if not args.no_download:
         def _stream() -> None:
             stream_result["total"] = download_all_files(
-                rom, args.rom_id, out_dir, stop_event=stop_event)
+                rom, args.rom_id, out_dir, stop_event=stop_event,
+                session_id=session_id)
 
         stream_thread = threading.Thread(target=_stream, daemon=True)
         stream_thread.start()
 
     session = poll_session(rom, args.rom_id, args.proton_build,
-                           timeout=args.timeout)
+                           timeout=args.timeout, session_id=session_id)
     state = session.get("state")
 
     if stream_thread is not None:
@@ -717,13 +829,20 @@ def _run(args: argparse.Namespace, rom: RommClient) -> int:
             stop_event.set()
             stream_thread.join(timeout=30.0)
         else:
+            if stream_thread.is_alive():
+                log("waiting for the local download to catch up "
+                    "(server-side install already finished)...")
             # Let it finish naturally (it stops on its own once every listed
             # file reports complete) - the overall --timeout budget doubles
             # as a safety net so this can't hang forever either.
             stream_thread.join(timeout=args.timeout)
         total = stream_result.get("total", 0)
         if state == "done":
-            log(f"downloaded {fmt_bytes(total)} to {out_dir}")
+            # This, not the earlier "install finished on the server" line,
+            # is the actual "you have everything, safe to disconnect" signal
+            # - the two can land many seconds (or, for one very large file
+            # on a slow link, much longer) apart.
+            log(f"all files downloaded ({fmt_bytes(total)}) to {out_dir} - install complete")
     elif state == "done":
         log("install done; files are cached on server, pass --no-download false to fetch")
 
