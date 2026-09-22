@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import http.client
 import json
 import os
@@ -303,6 +304,35 @@ class RommClient:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
         return data
 
+    # -- finished-install files (hash-verified) ---------------------------
+    def list_files(self, rom_id: int, session_id: int | None = None) -> dict:
+        """The finished install's own file list with sha1 hashes - only
+        available once the session is DONE (see GET /install/files's own
+        docstring). Used to verify a download actually matches what the
+        server really produced, not just that it's the right size."""
+        endpoint = f"/api/roms/{rom_id}/install/files"
+        if session_id is not None:
+            endpoint += f"?session_id={session_id}"
+        status, data = self.c.get_json(endpoint)
+        if status != 200:
+            raise RuntimeError(extract_error(json.dumps(data).encode(), status))
+        return data
+
+    def download_file(self, rom_id: int, path: str,
+                      session_id: int | None = None) -> bytes:
+        """Fetch one finished file in full (no Range) - used to re-download
+        a file verify_and_repair found corrupted, not for the initial pull
+        (stream_file already handles that, resumably, via the live endpoint).
+        """
+        encoded = urllib.parse.quote(path, safe="/")
+        endpoint = f"/api/roms/{rom_id}/install/files/{encoded}"
+        if session_id is not None:
+            endpoint += f"?session_id={session_id}"
+        status, content, _ = self.c.request("GET", endpoint, timeout=60.0)
+        if status != 200:
+            raise RuntimeError(extract_error(content, status))
+        return content
+
     # -- streaming --------------------------------------------------------
     def stream_manifest(self, rom_id: int, session_id: int | None = None) -> dict | None:
         """Live view of the install's output so far, or None if there's
@@ -522,6 +552,60 @@ def download_all_files(rom: RommClient, rom_id: int, out_dir: Path,
     return total
 
 
+def _sha1_of(path: Path) -> str:
+    digest = hashlib.sha1()
+    with path.open("rb") as f:
+        while chunk := f.read(4 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_and_repair(rom: RommClient, rom_id: int, out_dir: Path,
+                      session_id: int | None = None) -> None:
+    """Verify every downloaded file's sha1 against the server's own
+    finished, hash-verified manifest (GET /install/files) and re-fetch
+    whatever doesn't match.
+
+    This is the actual safety net behind the "Stream uncompleted files"
+    experimental server setting (see Settings -> Library Management ->
+    Stream Install): that setting lets the server hand out a growing file's
+    bytes before it's confirmed to have stopped changing, so a client can
+    end up with a local copy that's the right SIZE but not actually correct
+    content. Comparing against the server's real manifest is what catches
+    that - run unconditionally (not just when the experimental setting is
+    known to be on) since it's cheap insurance either way and a client has
+    no direct way to know what the server had it configured to.
+    """
+    try:
+        manifest = rom.list_files(rom_id, session_id=session_id)
+    except RuntimeError as e:
+        warn(f"couldn't verify downloaded files: {e}")
+        return
+
+    files = manifest.get("files", [])
+    log(f"verifying {len(files)} file(s) against the server's hashes...")
+    mismatches = 0
+    for entry in files:
+        path = entry["path"]
+        local_path = out_dir / path
+        if not local_path.is_file():
+            continue  # never downloaded (e.g. --no-download) - nothing to check
+        if _sha1_of(local_path) == entry["sha1"]:
+            continue
+        mismatches += 1
+        warn(f"  {path}: hash mismatch - re-downloading")
+        try:
+            local_path.write_bytes(rom.download_file(rom_id, path, session_id=session_id))
+            if _sha1_of(local_path) == entry["sha1"]:
+                log(f"  {path}: repaired")
+            else:
+                warn(f"  {path}: still mismatched after re-download")
+        except RuntimeError as e:
+            warn(f"  {path}: repair failed: {e}")
+    if mismatches == 0:
+        log("all files verified OK")
+
+
 def start_session_with_retry(rom: RommClient, rom_id: int, installer_path: str | None,
                              proton_build: str | None, ttl: int | None) -> dict:
     """POST /install, riding out a transient "install worker not connected"
@@ -669,6 +753,9 @@ def main() -> int:
                         "~/roms/<game name>/...")
     p.add_argument("--no-download", action="store_true",
                    help="start + poll, but do not stream files")
+    p.add_argument("--no-verify", action="store_true",
+                   help="skip the post-download sha1 verification pass "
+                        "against the server's finished manifest")
     p.add_argument("--cancel", action="store_true",
                    help="cancel an active session instead of starting")
     p.add_argument("--clear", action="store_true",
@@ -843,6 +930,8 @@ def _run(args: argparse.Namespace, rom: RommClient) -> int:
             # - the two can land many seconds (or, for one very large file
             # on a slow link, much longer) apart.
             log(f"all files downloaded ({fmt_bytes(total)}) to {out_dir} - install complete")
+            if not args.no_verify:
+                verify_and_repair(rom, args.rom_id, out_dir, session_id=session_id)
     elif state == "done":
         log("install done; files are cached on server, pass --no-download false to fetch")
 
