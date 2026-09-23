@@ -39,6 +39,14 @@ TaskBarShowMEMStatus=0
 TaskBarShowNetStatus=0
 TaskBarShowMailboxStatus=0
 
+# Battery/power status widget: TaskBarShowAPMAuto defaults to 1, which
+# auto-enables this if a battery is detected - and the container sees the
+# *host's* laptop battery through the leaked /sys/class/power_supply, so it
+# shows up here regardless of host hardware. Disabled outright rather than
+# relying on absence of a battery, since that's an environment accident.
+TaskBarShowAPMStatus=0
+TaskBarShowAPMAuto=0
+
 # Clock: this session lasts as long as one install; nobody needs the time.
 TaskBarShowClock=0
 
