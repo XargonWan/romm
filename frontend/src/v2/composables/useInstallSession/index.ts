@@ -130,14 +130,11 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
   const starting = ref(false);
   const cancelling = ref(false);
   const clearingCache = ref(false);
-  // Track in-progress Proton builds by id for live progress display.
-  const downloadingBuilds = ref<Record<string, number>>({});
   // Whether an install-sandbox worker is connected right now - there's no
   // static setting, this is the sole signal for offering "Install" at all.
   // `null` = not checked yet (assume no, matches the fail-closed default).
   const workerAvailable = ref<boolean | null>(null);
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
-  let downloadPollTimer: ReturnType<typeof setTimeout> | null = null;
   // schedulePoll() runs inside an async `finally`, so a plain "clear
   // whatever timer id we're tracking" on unmount can miss a call that's
   // already in flight - it resolves anyway and reschedules regardless.
@@ -334,57 +331,6 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     }
   }
 
-  /** Enqueue a Proton build download on the install worker, then start polling
-   *  for progress. Re-fetches the build list when done so newly-installed
-   *  builds appear in the picker. */
-  async function downloadProtonBuild(buildId: string) {
-    downloadingBuilds.value[buildId] = 0;
-    try {
-      await installApi.downloadProtonBuild(buildId);
-      scheduleDownloadPoll(buildId);
-    } catch (err) {
-      const detail = errorDetail(err);
-      snackbar.error(
-        t("rom.install-snackbar-proton-download-failed", {
-          name: buildId,
-          detail,
-        }),
-        { icon: "mdi-alert-circle-outline" },
-      );
-      delete downloadingBuilds.value[buildId];
-    }
-  }
-
-  const DOWNLOAD_POLL_INTERVAL_MS = 2000;
-
-  function scheduleDownloadPoll(buildId: string) {
-    if (downloadPollTimer !== null) clearTimeout(downloadPollTimer);
-    if (stopped) return;
-    downloadPollTimer = setTimeout(
-      () => pollDownloadProgress(buildId),
-      DOWNLOAD_POLL_INTERVAL_MS,
-    );
-  }
-
-  async function pollDownloadProgress(buildId: string) {
-    try {
-      const { data } = await installApi.getProtonDownloadProgress(buildId);
-      if (data.progress === null) {
-        // Download finished or not running — refresh the build list so the
-        // newly-installed build appears in the picker.
-        downloadPollTimer = null;
-        await fetchProtonBuilds();
-        delete downloadingBuilds.value[buildId];
-      } else {
-        downloadingBuilds.value[buildId] = data.progress;
-        scheduleDownloadPoll(buildId);
-      }
-    } catch {
-      downloadPollTimer = null;
-      delete downloadingBuilds.value[buildId];
-    }
-  }
-
   async function pollProtonDownload(buildId: string) {
     if (!canInstall.value) return;
     try {
@@ -561,7 +507,6 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
   onBeforeUnmount(() => {
     stopped = true;
     stopPolling();
-    if (downloadPollTimer !== null) clearTimeout(downloadPollTimer);
   });
 
   return {
@@ -570,7 +515,6 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     session,
     candidates,
     protonBuilds,
-    downloadingBuilds,
     streamCopy,
     checking,
     starting,
@@ -590,7 +534,6 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     checkWorkerAvailable,
     checkCandidates,
     fetchProtonBuilds,
-    downloadProtonBuild,
     startWithPath,
     cancelInstall,
     confirmClearIfInstalled,

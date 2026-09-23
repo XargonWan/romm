@@ -172,19 +172,6 @@ const protonItems = computed(() =>
   })),
 );
 
-// Whether any not-yet-installed build is listed (shows the download button).
-const downloadableBuilds = computed(() =>
-  install.protonBuilds.value.filter((b) => !b.installed),
-);
-
-function downloadSelectedProton() {
-  // Queue downloads for every not-yet-installed build the server lists.
-  // Each runs as an independent RQ job on the install worker.
-  for (const build of downloadableBuilds.value) {
-    install.downloadProtonBuild(build.id);
-  }
-}
-
 async function startInstall() {
   // A no-op unless a cache already exists for this ROM - see the
   // composable's own docstring. Always proceeds to install either way.
@@ -412,22 +399,6 @@ const downloadSpeedLimitLabel = computed(() =>
           :items="protonItems"
         />
 
-        <!-- Download affordance for installable (not-yet-installed) Proton
-             builds. Replaces the previous always-disabled placeholder button. -->
-        <RBtn
-          v-if="downloadableBuilds.length > 0"
-          block
-          variant="outlined"
-          size="small"
-          :loading="Object.keys(install.downloadingBuilds.value).length > 0"
-          :disabled="isBusy"
-          prepend-icon="mdi-download-outline"
-          class="r-v2-install__proton-download"
-          @click="downloadSelectedProton"
-        >
-          {{ t("rom.install-download-other-proton") }}
-        </RBtn>
-
         <RBtn
           v-if="install.session.value"
           block
@@ -639,19 +610,6 @@ const downloadSpeedLimitLabel = computed(() =>
   border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
   border-top-color: currentColor;
   animation: r-install-spin 0.8s linear infinite;
-}
-
-/* Long disabled-state label - let it wrap instead of clipping past the
-   sidebar's fixed width. */
-.r-v2-install__proton-download {
-  height: auto !important;
-  min-height: 36px;
-  padding-block: 6px;
-}
-.r-v2-install__proton-download :deep(.r-btn__label) {
-  white-space: normal;
-  text-align: left;
-  line-height: 1.25;
 }
 
 /* ── Bottom bar ──────────────────────────────────────────── */
