@@ -8,6 +8,7 @@ import type {
   ProtonBuildsSchema,
 } from "@/__generated__";
 import api from "@/services/api";
+import { triggerFileDownload } from "@/services/api/rom";
 
 // Locally defined response shapes for new Proton download endpoints. Once the
 // backend types are regenerated from the OpenAPI schema, these can be moved
@@ -103,6 +104,14 @@ function getInstallFileDownloadPath(romId: number, filePath: string): string {
   return `/api/roms/${romId}/install/files/${encodeURI(filePath)}`;
 }
 
+/** Download a finished install's entire cache as one ZIP - same
+ *  fire-and-forget `<a>`-click pattern as romApi.downloadRom/bulkDownloadRoms
+ *  (the browser follows the URL and streams the response directly, no
+ *  fetch/blob handling needed here). */
+function downloadInstallCache(romId: number) {
+  return triggerFileDownload(`/api/roms/${romId}/install/download`);
+}
+
 /** Live view of an install's output (sealed/complete per file, viewer count,
  *  the shared bandwidth cap) - one endpoint regardless of whether the
  *  session is still running or already finished. */
@@ -132,6 +141,7 @@ export default {
   getInstallDashboard,
   getInstallFiles,
   getInstallFileDownloadPath,
+  downloadInstallCache,
   getInstallStreamManifest,
   getInstallStreamFileDownloadPath,
   getProtonBuilds,

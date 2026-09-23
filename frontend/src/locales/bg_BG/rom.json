@@ -168,6 +168,7 @@
   "install-confirm-reinstall-title": "Продължи инсталацията",
   "install-copying": "Копиране на файлове…",
   "install-detecting": "Откриване на инсталатор…",
+  "install-download-cache": "Изтегляне на кеша на инсталацията",
   "install-download-other-proton": "Изтегли тази версия на Proton",
   "install-download-proton-disabled-hint": "Изтегляне на други версии на Proton (очаквайте скоро)",
   "install-downloading-proton": "Изтегляне на Proton {name}… {pct}%",

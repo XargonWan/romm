@@ -168,6 +168,7 @@
   "install-confirm-reinstall-title": "继续安装",
   "install-copying": "正在复制文件…",
   "install-detecting": "正在检测安装程序…",
+  "install-download-cache": "下载安装缓存",
   "install-download-other-proton": "下载此 Proton 版本",
   "install-download-proton-disabled-hint": "下载其他 Proton 版本(即将推出)",
   "install-downloading-proton": "正在下载 Proton {name}… {pct}%",

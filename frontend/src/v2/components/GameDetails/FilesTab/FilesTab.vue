@@ -206,6 +206,10 @@ function installFileDownloadPath(file: InstallFileSchema): string {
   return installApi.getInstallStreamFileDownloadPath(props.rom.id, file.path);
 }
 
+function downloadInstallCache() {
+  installApi.downloadInstallCache(props.rom.id);
+}
+
 // "Clear install cache" lives here (in place of Upload, which makes no
 // sense for this subtab) rather than on the Install page/ribbon - a plain
 // local action instead of pulling in the full useInstallSession poll loop
@@ -836,16 +840,26 @@ const currentUploadState = computed<SubtabUploadState>(() => {
         v-if="installFiles && installFiles.length > 0"
         class="r-v2-files__section-head"
       >
-        <RBtn
-          variant="outlined"
-          size="small"
-          color="error"
-          prepend-icon="mdi-database-remove"
-          :loading="clearingInstallCache"
-          @click="clearInstallCache"
-        >
-          {{ t("rom.install-clear-cache") }}
-        </RBtn>
+        <div class="r-v2-files__section-actions">
+          <RBtn
+            variant="outlined"
+            size="small"
+            color="error"
+            prepend-icon="mdi-database-remove"
+            :loading="clearingInstallCache"
+            @click="clearInstallCache"
+          >
+            {{ t("rom.install-clear-cache") }}
+          </RBtn>
+          <RBtn
+            variant="outlined"
+            size="small"
+            prepend-icon="mdi-folder-zip-outline"
+            @click="downloadInstallCache"
+          >
+            {{ t("rom.install-download-cache") }}
+          </RBtn>
+        </div>
       </header>
 
       <REmptyState

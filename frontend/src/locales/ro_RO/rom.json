@@ -168,6 +168,7 @@
   "install-confirm-reinstall-title": "Continuă instalarea",
   "install-copying": "Se copiază fișierele…",
   "install-detecting": "Se detectează instalatorul…",
+  "install-download-cache": "Descarcă cache-ul de instalare",
   "install-download-other-proton": "Descarcă această versiune de Proton",
   "install-download-proton-disabled-hint": "Descarcă alte versiuni de Proton (în curând)",
   "install-downloading-proton": "Se descarcă Proton {name}… {pct}%",

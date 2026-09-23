@@ -168,6 +168,7 @@
   "install-confirm-reinstall-title": "インストールを続行",
   "install-copying": "ファイルをコピー中…",
   "install-detecting": "インストーラーを検出中…",
+  "install-download-cache": "インストールキャッシュをダウンロード",
   "install-download-other-proton": "このProtonバージョンをダウンロード",
   "install-download-proton-disabled-hint": "他のProtonバージョンをダウンロード(近日公開)",
   "install-downloading-proton": "Proton {name} をダウンロード中… {pct}%",

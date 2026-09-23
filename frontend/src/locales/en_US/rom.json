@@ -168,6 +168,7 @@
   "install-confirm-reinstall-title": "Continue installation",
   "install-copying": "Copying files…",
   "install-detecting": "Detecting installer…",
+  "install-download-cache": "Download install cache",
   "install-download-other-proton": "Download this Proton version",
   "install-download-proton-disabled-hint": "Download other Proton versions (coming soon)",
   "install-downloading-proton": "Downloading Proton {name}… {pct}%",

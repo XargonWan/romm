@@ -168,6 +168,7 @@
   "install-confirm-reinstall-title": "Pokračovat v instalaci",
   "install-copying": "Kopírování souborů…",
   "install-detecting": "Zjišťování instalátoru…",
+  "install-download-cache": "Stáhnout mezipaměť instalace",
   "install-download-other-proton": "Stáhnout tuto verzi Proton",
   "install-download-proton-disabled-hint": "Stáhnout jiné verze Proton (již brzy)",
   "install-downloading-proton": "Stahování Proton {name}… {pct}%",

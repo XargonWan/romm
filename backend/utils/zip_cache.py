@@ -84,16 +84,22 @@ def get_cached_zip(namespace: str, cache_key: str) -> Path | None:
     return path if path.exists() else None
 
 
-def _ensure_zipfile_writable() -> None:
+def ensure_zipfile_writable() -> None:
     """Restore ``zipfile._get_compressor`` to a writable signature.
 
-    ``zipfile_inflate64`` (imported in ``handler/filesystem/roms_handler.py``
-    to support Enhanced Deflate) replaces ``zipfile._get_compressor`` with a
-    wrapper that only accepts ``compress_type``. CPython 3.13 calls it with
-    ``(compress_type, compresslevel)``, so ``ZipFile.write()``/``writestr()``
-    raise ``TypeError``. Wrap it once with a signature-compatible shim that
-    drops the extra arg, matching inflate64's own behavior (it already ignores
-    ``compresslevel``). Idempotent and safe to call from any thread.
+    ``zipfile_inflate64`` (imported in ``utils/archives.py`` to support
+    Enhanced Deflate) replaces ``zipfile._get_compressor`` with a wrapper
+    that only accepts ``compress_type``, globally, for the whole process -
+    not just call sites that actually need Enhanced Deflate. CPython 3.13
+    calls it with ``(compress_type, compresslevel)``, so any
+    ``ZipFile.write()``/``writestr()`` anywhere in the app raises
+    ``TypeError`` (or, once ``ZipFile.close()`` runs, a confusing "open
+    writing handle" ``ValueError`` instead) unless this has been called
+    first. Wrap it once with a signature-compatible shim that drops the
+    extra arg, matching inflate64's own behavior (it already ignores
+    ``compresslevel``). Idempotent and safe to call from any thread - call
+    this before building *any* ZIP for download in this codebase, not just
+    the bulk-ROM one below.
     """
     current = zipfile._get_compressor  # type: ignore[attr-defined]
     if getattr(current, "_romm_compresslevel_safe", False):
@@ -135,7 +141,7 @@ def build_cached_zip(
     fd, tmp_path = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
     try:
         os.close(fd)
-        _ensure_zipfile_writable()
+        ensure_zipfile_writable()
         with zipfile.ZipFile(tmp_path, "w") as zf:
             for entry in entries:
                 src = Path(LIBRARY_BASE_PATH) / entry.full_path

@@ -168,6 +168,7 @@
   "install-confirm-reinstall-title": "설치 계속하기",
   "install-copying": "파일 복사 중…",
   "install-detecting": "설치 프로그램 감지 중…",
+  "install-download-cache": "설치 캐시 다운로드",
   "install-download-other-proton": "이 Proton 버전 다운로드",
   "install-download-proton-disabled-hint": "다른 Proton 버전 다운로드(출시 예정)",
   "install-downloading-proton": "Proton {name} 다운로드 중… {pct}%",

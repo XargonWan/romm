@@ -168,6 +168,7 @@
   "install-confirm-reinstall-title": "Telepítés folytatása",
   "install-copying": "Fájlok másolása…",
   "install-detecting": "Telepítő felismerése…",
+  "install-download-cache": "Telepítési gyorsítótár letöltése",
   "install-download-other-proton": "Ezen Proton verzió letöltése",
   "install-download-proton-disabled-hint": "Más Proton verziók letöltése (hamarosan)",
   "install-downloading-proton": "Proton {name} letöltése… {pct}%",

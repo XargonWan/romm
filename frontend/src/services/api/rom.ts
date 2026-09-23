@@ -443,7 +443,7 @@ async function searchRom({
   });
 }
 
-function triggerFileDownload(href: string) {
+export function triggerFileDownload(href: string) {
   return new Promise<void>((resolve) => {
     const a = document.createElement("a");
     a.href = href;

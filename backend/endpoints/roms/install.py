@@ -1,6 +1,9 @@
 import asyncio
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import quote
 
 import aiohttp
 from fastapi import Body, HTTPException, Response, WebSocket
@@ -69,7 +72,8 @@ from models.install_session import (
     InstallSessionState,
 )
 from utils.install_cache import clear_session_cache, resolve_expires_at, session_cache_dir
-from utils.nginx import FileRedirectResponse
+from utils.nginx import FileRedirectResponse, ZipContentLine, ZipResponse
+from utils.zip_cache import ensure_zipfile_writable
 from utils.router import APIRouter
 
 router = APIRouter()
@@ -874,6 +878,78 @@ async def download_install_file(
     return FileRedirectResponse(
         download_path=Path(f"/cache/installs/{session.id}/{entry.path}"),
         filename=Path(entry.path).name,
+    )
+
+
+@protected_route(
+    router.get,
+    "/{id}/install/download",
+    [Scope.ROMS_INSTALL],
+    responses={status.HTTP_404_NOT_FOUND: {}},
+)
+async def download_install_cache(
+    request: Request,
+    id: Annotated[int, PathVar(description="Rom internal id.", ge=1)],
+    session_id: int | None = None,
+) -> Response:
+    """Download a finished install's entire cache as a single ZIP.
+
+    Only available once the session reaches DONE, same gate as
+    `GET /install/files` (whose entries this packages together instead of
+    serving one at a time). Pass `session_id` to pin to a specific attempt
+    (see `_resolve_session`).
+
+    Streams via nginx's mod_zip module (see utils.nginx.ZipResponse) - the
+    exact mechanism `GET /roms/download` already uses for bulk ROM
+    downloads - so a multi-GB install cache is never buffered into memory
+    or built to a temp file here, just referenced by its already-on-disk
+    location. DEV_MODE (no nginx in front to interpret mod_zip headers)
+    falls back to a real in-memory ZIP, matching the equivalent dev-mode
+    fallback for bulk ROM downloads.
+    """
+    rom = db_rom_handler.get_rom(id)
+    if not rom:
+        raise RomNotFoundInDatabaseException(id)
+    assert_rom_visible(request, rom)
+
+    session = _resolve_session(rom.id, request.user.id, session_id)
+    if not session:
+        raise InstallSessionNotFoundException(id)
+
+    entries = read_manifest(session_cache_dir(session.id))
+    if not entries:
+        raise InstallSessionNotFoundException(id)
+
+    zip_filename = f"{rom.fs_name} - Install Cache.zip"
+
+    if DEV_MODE:
+        cache_dir = session_cache_dir(session.id)
+        ensure_zipfile_writable()
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zf:
+            for entry in entries:
+                zf.write(cache_dir / entry.path, arcname=entry.path)
+        return Response(
+            content=buffer.getvalue(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": (
+                    f"attachment; filename*=UTF-8''{quote(zip_filename)}"
+                ),
+            },
+        )
+
+    return ZipResponse(
+        content_lines=[
+            ZipContentLine(
+                crc32=None,
+                size_bytes=entry.size_bytes,
+                encoded_location=quote(f"/cache/installs/{session.id}/{entry.path}"),
+                filename=entry.path,
+            )
+            for entry in entries
+        ],
+        filename=zip_filename,
     )
 
 

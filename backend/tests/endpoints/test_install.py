@@ -1,3 +1,5 @@
+import io
+import zipfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -771,6 +773,81 @@ class TestDownloadInstallFile:
             )
         assert r.status_code == status.HTTP_200_OK
         assert r.content == b"payload bytes"
+
+
+class TestDownloadInstallCache:
+    def test_no_manifest_404s(
+        self, client: TestClient, access_token: str, rom: Rom, admin_user: User
+    ):
+        db_install_session_handler.add_session(
+            InstallSession(
+                rom_id=rom.id, user_id=admin_user.id, state=InstallSessionState.DONE
+            )
+        )
+        r = client.get(
+            f"/api/roms/{rom.id}/install/download", headers=_auth(access_token)
+        )
+        assert r.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_downloads_a_real_zip_in_dev_mode(
+        self,
+        client: TestClient,
+        access_token: str,
+        rom: Rom,
+        admin_user: User,
+        install_cache_root,
+    ):
+        session = db_install_session_handler.add_session(
+            InstallSession(
+                rom_id=rom.id, user_id=admin_user.id, state=InstallSessionState.DONE
+            )
+        )
+        cache_dir = install_cache_root / str(session.id)
+        (cache_dir / "sub").mkdir(parents=True)
+        (cache_dir / "game.exe").write_bytes(b"exe bytes")
+        (cache_dir / "sub" / "data.bin").write_bytes(b"nested bytes")
+        write_manifest(cache_dir, build_manifest(cache_dir))
+
+        with patch("endpoints.roms.install.DEV_MODE", True):
+            r = client.get(
+                f"/api/roms/{rom.id}/install/download", headers=_auth(access_token)
+            )
+        assert r.status_code == status.HTTP_200_OK
+        assert r.headers["content-type"] == "application/zip"
+        assert "Install%20Cache.zip" in r.headers["content-disposition"]
+
+        with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+            assert set(zf.namelist()) == {"game.exe", "sub/data.bin"}
+            assert zf.read("game.exe") == b"exe bytes"
+            assert zf.read("sub/data.bin") == b"nested bytes"
+
+    def test_streams_via_mod_zip_in_production(
+        self,
+        client: TestClient,
+        access_token: str,
+        rom: Rom,
+        admin_user: User,
+        install_cache_root,
+    ):
+        session = db_install_session_handler.add_session(
+            InstallSession(
+                rom_id=rom.id, user_id=admin_user.id, state=InstallSessionState.DONE
+            )
+        )
+        cache_dir = install_cache_root / str(session.id)
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "game.exe").write_bytes(b"exe bytes")
+        write_manifest(cache_dir, build_manifest(cache_dir))
+
+        # DEV_MODE is False by default in tests - no nginx to intercept the
+        # mod_zip headers, so this just checks the response is built
+        # correctly, not that a real zip comes back (nginx never runs here).
+        r = client.get(
+            f"/api/roms/{rom.id}/install/download", headers=_auth(access_token)
+        )
+        assert r.status_code == status.HTTP_200_OK
+        assert r.headers["x-archive-files"] == "zip"
+        assert f"/cache/installs/{session.id}/game.exe" in r.text
 
 
 class TestGetInstallStreamManifest:

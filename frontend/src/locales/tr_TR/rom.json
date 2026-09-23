@@ -168,6 +168,7 @@
   "install-confirm-reinstall-title": "Kuruluma devam et",
   "install-copying": "Dosyalar kopyalanıyor…",
   "install-detecting": "Yükleyici algılanıyor…",
+  "install-download-cache": "Yükleme önbelleğini indir",
   "install-download-other-proton": "Bu Proton sürümünü indir",
   "install-download-proton-disabled-hint": "Diğer Proton sürümlerini indir (yakında)",
   "install-downloading-proton": "Proton {name} indiriliyor… {pct}%",
