@@ -701,7 +701,28 @@ def extract_archive_tree(file_path: Path, dest_dir: Path) -> bool:
                 # skip it rather than write outside the extraction root.
                 log.warning(f"Skipping archive member escaping dest dir: {name}")
                 continue
-            member_path.parent.mkdir(parents=True, exist_ok=True)
+            if member_path.is_dir():
+                # A hybrid/dual-filesystem disc image (e.g. a Mac+PC ISO
+                # exposing both an ISO9660 and a Joliet/HFS tree) can list
+                # the same logical name twice with different attributes -
+                # 7z's own directory-attribute filtering doesn't always
+                # catch this, so a path already created as a directory by
+                # an earlier member (e.g. "DATA/SETUP.EXE" before a bare
+                # "DATA" entry) surfaces here as a zero-content placeholder
+                # rather than real file data. Nothing to write.
+                continue
+            try:
+                member_path.parent.mkdir(parents=True, exist_ok=True)
+            except FileExistsError:
+                # The reverse ordering of the same collision: an earlier
+                # member was itself one of these bogus placeholder entries,
+                # written as a plain file at a path another member now
+                # needs to be a directory. Safe to discard and retry.
+                if member_path.parent.is_file():
+                    member_path.parent.unlink()
+                    member_path.parent.mkdir(parents=True, exist_ok=True)
+                else:
+                    raise
             with member_path.open("wb") as f:
                 for chunk in chunks:
                     f.write(chunk)

@@ -561,3 +561,60 @@ class TestExtractArchiveTree:
             result = archives.extract_archive_tree(Path("/fake/game.7z"), dest)
 
         assert result is False
+
+    def test_bare_name_listed_before_its_own_directory_is_recovered(self, tmp_path):
+        """A hybrid/dual-filesystem disc image (e.g. a Mac+PC ISO exposing
+        both an ISO9660 and a Joliet/HFS tree) can list the same logical
+        name twice under different attributes - here "DATA" appears as its
+        own zero-byte "file" entry (7z's directory-attribute filtering
+        didn't catch it) *and* as the parent of "DATA/SETUP.EXE". In ASCII
+        path order "DATA" sorts before "DATA/SETUP.EXE", so the bare file
+        is written first; mkdir'ing "DATA" as a directory for the second
+        member must not blow up on the stray file it collides with."""
+        listing = MagicMock(
+            stdout=_fake_7z_listing_sized([("DATA", 0), ("DATA/SETUP.EXE", 4)])
+        )
+        popen = _mock_popen_streaming([[b""], [b"exe!"]], [0, 0])
+
+        dest = tmp_path / "extracted"
+        dest.mkdir()
+        with (
+            patch.object(archives.subprocess, "run", return_value=listing),
+            patch.object(archives.subprocess, "Popen", popen),
+        ):
+            result = archives.extract_archive_tree(Path("/fake/game.iso"), dest)
+
+        assert result is True
+        assert (dest / "DATA").is_dir()
+        assert (dest / "DATA" / "SETUP.EXE").read_bytes() == b"exe!"
+
+    def test_directory_placeholder_listed_after_its_contents_is_skipped(
+        self, tmp_path
+    ):
+        """The reverse ordering of the same collision (see the test above) -
+        "DATA/SETUP.EXE" creates the "DATA" directory first, then a later
+        bare "DATA" entry (the same zero-byte placeholder) must be skipped
+        rather than fail trying to open a directory for writing.
+
+        Every real reader (`_stream_archive_members`) sorts members into
+        ASCII path order before yielding, which happens to always put a
+        prefix name like "DATA" before "DATA/SETUP.EXE" - so this exact
+        ordering can't actually reach `extract_archive_tree` through any of
+        them today. Patching the dispatcher directly tests the defensive
+        check on its own merits (a future reader, or a change to that
+        sorting, could still hit it) rather than asserting on an ordering
+        the current callers happen to always avoid.
+        """
+
+        def fake_members(_path):
+            yield "DATA/SETUP.EXE", 4, iter([b"exe!"])
+            yield "DATA", 0, iter([b""])
+
+        dest = tmp_path / "extracted"
+        dest.mkdir()
+        with patch.object(archives, "_iter_archive_members", fake_members):
+            result = archives.extract_archive_tree(Path("/fake/game.iso"), dest)
+
+        assert result is True
+        assert (dest / "DATA").is_dir()
+        assert (dest / "DATA" / "SETUP.EXE").read_bytes() == b"exe!"

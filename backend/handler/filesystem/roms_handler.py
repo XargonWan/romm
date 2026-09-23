@@ -659,11 +659,21 @@ class FSRomsHandler(FSHandler):
         """Resolve a ROM-relative installer path to a validated absolute path.
 
         Guards against path traversal: the resolved path must stay inside the
-        ROM's own directory.
+        ROM's own directory - or, for a single-file ROM, its *parent*
+        directory, since get_rom_root_abs_path returns the file itself in
+        that case (no directory of its own to root against) while
+        list_rom_files_flat's matching single-file entry is `rom.fs_name`,
+        a plain filename meant to be joined onto that parent - same
+        distinction runner.py's own installer_search_root already makes.
+        Skipping this fallback meant a single-file ROM (e.g. a bare .iso)
+        could never resolve its own installer_path at all: joining a file
+        path with another path segment (`rom_root / installer_rel_path`)
+        produces a path nested *inside* the file, which never exists.
         """
         rom_root = self.get_rom_root_abs_path(rom).resolve()
-        candidate = (rom_root / installer_rel_path).resolve()
-        if rom_root != candidate and rom_root not in candidate.parents:
+        search_root = rom_root if rom_root.is_dir() else rom_root.parent
+        candidate = (search_root / installer_rel_path).resolve()
+        if search_root != candidate and search_root not in candidate.parents:
             # Surfaced as the install session's user-facing error; "game" (not
             # "ROM") since this only ever fires for the Windows install flow.
             raise ValueError("Installer path escapes the game's directory")

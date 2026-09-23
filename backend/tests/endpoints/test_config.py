@@ -201,7 +201,9 @@ def test_update_install_settings_payload_shape(client, access_token: str):
 
     assert response.status_code == status.HTTP_200_OK
     update_install_settings.assert_called_once_with(
-        download_speed_limit_bytes_per_sec=500_000
+        download_speed_limit_bytes_per_sec=500_000,
+        default_proton_build=None,
+        stream_uncompleted_files=None,
     )
     # The limiter must pick up the new cap immediately, not just on next boot.
     set_bytes_per_second.assert_called_once_with(500_000)
@@ -239,5 +241,7 @@ def test_update_install_settings_defaults_to_unlimited(client, access_token: str
 
     assert response.status_code == status.HTTP_200_OK
     update_install_settings.assert_called_once_with(
-        download_speed_limit_bytes_per_sec=None
+        download_speed_limit_bytes_per_sec=None,
+        default_proton_build=None,
+        stream_uncompleted_files=None,
     )

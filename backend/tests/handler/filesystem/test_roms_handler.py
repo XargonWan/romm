@@ -1260,6 +1260,73 @@ class TestFSRomsHandler:
         mock_calculate.assert_called_once()
         assert parsed.ra_hash == ""
 
+    @pytest.fixture
+    def rom_iso_single(self):
+        """A dedicated scratch platform/filename, distinct from every other
+        fixture in this file (`rom_single` et al. share "n64/roms" with
+        many other tests' own real, committed fixture files - writing or
+        deleting anything there risks corrupting those instead of just this
+        test's own scratch data, see the incident this comment is here to
+        prevent)."""
+        platform = Platform(
+            name="Windows", slug="win", fs_slug="romm-test-scratch-win"
+        )
+        return Rom(
+            id=999,
+            fs_name="ROMM_TEST_SCRATCH_INSTALL.iso",
+            fs_path="romm-test-scratch-win/roms",
+            fs_extension="iso",
+            platform=platform,
+            full_path="romm-test-scratch-win/roms/ROMM_TEST_SCRATCH_INSTALL.iso",
+        )
+
+    def test_resolve_installer_abs_path_for_a_single_file_rom(
+        self, handler: FSRomsHandler, rom_iso_single: Rom
+    ):
+        """get_rom_root_abs_path returns the file itself (not a directory)
+        for a single-file ROM - resolve_installer_abs_path must fall back to
+        its *parent* directory as the search root, matching what
+        list_rom_files_flat's own single-file entry (`rom.fs_name`, a plain
+        filename) is actually relative to. Joining that filename directly
+        onto the file's own path (the bug this pins) produces a path
+        nested *inside* the file, which can never exist - e.g. a ROM that's
+        itself a single Windows-installable .iso could never resolve its
+        own installer_path at all.
+        """
+        scratch_root = handler.base_path / "romm-test-scratch-win"
+        rom_file = handler.base_path / rom_iso_single.fs_path / rom_iso_single.fs_name
+        try:
+            rom_file.parent.mkdir(parents=True, exist_ok=True)
+            rom_file.write_bytes(b"fake iso content")
+
+            resolved = handler.resolve_installer_abs_path(
+                rom_iso_single, rom_iso_single.fs_name
+            )
+            assert Path(resolved) == rom_file.resolve()
+        finally:
+            shutil.rmtree(scratch_root, ignore_errors=True)
+
+    def test_resolve_installer_abs_path_still_blocks_traversal(
+        self, handler: FSRomsHandler, rom_iso_single: Rom
+    ):
+        """The parent-directory fallback must not weaken the escape guard -
+        a path climbing out of the ROM's own directory (here, its sibling
+        rather than itself) still has to be rejected."""
+        scratch_root = handler.base_path / "romm-test-scratch-win"
+        rom_file = handler.base_path / rom_iso_single.fs_path / rom_iso_single.fs_name
+        try:
+            rom_file.parent.mkdir(parents=True, exist_ok=True)
+            rom_file.write_bytes(b"fake iso content")
+            secret = scratch_root / "secret.txt"
+            secret.write_text("nope")
+
+            with pytest.raises(ValueError, match="escapes the game's directory"):
+                handler.resolve_installer_abs_path(
+                    rom_iso_single, "../secret.txt"
+                )
+        finally:
+            shutil.rmtree(scratch_root, ignore_errors=True)
+
 
 class TestExtractCHDHash:
     """Test suite for extract_chd_hash function"""
