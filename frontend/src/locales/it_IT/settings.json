@@ -451,6 +451,8 @@
   "sort-size": "Dimensione",
   "states": "Stati",
   "stopped": "Fermato",
+  "stream-install-auto-mode": "Modalità automatica",
+  "stream-install-auto-mode-desc": "Legge lo schermo dell’installer con l’OCR e preme per te Avanti, Accetta, Installa e Fine. Se si blocca ti viene chiesto di continuare a mano. Modificabile per ogni installazione.",
   "stream-install-custom-add-error": "Impossibile aggiungere la build di Proton: {detail}",
   "stream-install-custom-added": "{name} aggiunto",
   "stream-install-custom-desc": "Assegna un nome alla build e l'URL del suo archivio .tar.gz/.tar.xz. Viene scaricata al primo utilizzo.",

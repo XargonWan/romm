@@ -451,6 +451,8 @@
   "sort-size": "Velikost",
   "states": "Stavy",
   "stopped": "Zastaveno",
+  "stream-install-auto-mode": "Automatický režim",
+  "stream-install-auto-mode-desc": "Čte obrazovku instalátoru pomocí OCR a za vás stiskne Další, Souhlasím, Instalovat a Dokončit. Pokud uvázne, budete požádáni o ruční pokračování. Lze přepnout pro každou instalaci.",
   "stream-install-custom-add-error": "Build Proton se nepodařilo přidat: {detail}",
   "stream-install-custom-added": "{name} přidán",
   "stream-install-custom-desc": "Zadejte buildu název a URL jeho archivu .tar.gz/.tar.xz. Stáhne se při prvním použití.",

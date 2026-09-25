@@ -451,6 +451,8 @@
   "sort-size": "容量",
   "states": "状态",
   "stopped": "已停止",
+  "stream-install-auto-mode": "自动模式",
+  "stream-install-auto-mode-desc": "通过 OCR 读取安装程序界面，并自动点击“下一步”“同意”“安装”和“完成”。若卡住，会提示您手动继续。可在每次安装时单独切换。",
   "stream-install-custom-add-error": "无法添加 Proton 版本：{detail}",
   "stream-install-custom-added": "已添加 {name}",
   "stream-install-custom-desc": "为该版本设置名称，并填写其 .tar.gz/.tar.xz 压缩包的 URL。首次使用时下载。",

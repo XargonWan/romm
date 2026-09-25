@@ -451,6 +451,8 @@
   "sort-size": "サイズ",
   "states": "ステートセーブ",
   "stopped": "停止済み",
+  "stream-install-auto-mode": "自動モード",
+  "stream-install-auto-mode-desc": "OCRでインストーラーの画面を読み取り、「次へ」「同意」「インストール」「完了」を自動で押します。進めなくなった場合は手動で続けるよう通知されます。インストールごとに切り替え可能です。",
   "stream-install-custom-add-error": "Proton ビルドを追加できませんでした: {detail}",
   "stream-install-custom-added": "{name} を追加しました",
   "stream-install-custom-desc": "ビルドの名前と .tar.gz/.tar.xz アーカイブの URL を入力してください。初回使用時にダウンロードされます。",

@@ -451,6 +451,8 @@
   "sort-size": "Méret",
   "states": "Állások",
   "stopped": "Megállítva",
+  "stream-install-auto-mode": "Automatikus mód",
+  "stream-install-auto-mode-desc": "OCR-rel olvassa a telepítő képernyőjét, és megnyomja helyetted a Tovább, Elfogadom, Telepítés és Befejezés gombokat. Ha elakad, kérni fogja, hogy kézzel folytasd. Telepítésenként módosítható.",
   "stream-install-custom-add-error": "A Proton build hozzáadása sikertelen: {detail}",
   "stream-install-custom-added": "{name} hozzáadva",
   "stream-install-custom-desc": "Adj nevet a buildnek és add meg a .tar.gz/.tar.xz archívumának URL-jét. Az első használatkor töltődik le.",

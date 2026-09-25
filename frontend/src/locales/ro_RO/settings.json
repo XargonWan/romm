@@ -451,6 +451,8 @@
   "sort-size": "Dimensiune",
   "states": "Stări",
   "stopped": "Oprire",
+  "stream-install-auto-mode": "Mod automat",
+  "stream-install-auto-mode-desc": "Citește ecranul instalatorului prin OCR și apasă pentru tine Următorul, Accept, Instalare și Terminare. Dacă se blochează, ți se cere să continui manual. Poate fi schimbat pentru fiecare instalare.",
   "stream-install-custom-add-error": "Nu s-a putut adăuga build-ul Proton: {detail}",
   "stream-install-custom-added": "{name} adăugat",
   "stream-install-custom-desc": "Dă-i build-ului un nume și URL-ul arhivei sale .tar.gz/.tar.xz. Este descărcat la prima utilizare.",

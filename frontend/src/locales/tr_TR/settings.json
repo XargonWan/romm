@@ -451,6 +451,8 @@
   "sort-size": "Boyut",
   "states": "Durum Kayıtları",
   "stopped": "Durduruldu",
+  "stream-install-auto-mode": "Otomatik mod",
+  "stream-install-auto-mode-desc": "Yükleyici ekranını OCR ile okur ve sizin yerinize İleri, Kabul Et, Yükle ve Son düğmelerine basar. Takılırsa elle devam etmeniz istenir. Her kurulum için değiştirilebilir.",
   "stream-install-custom-add-error": "Proton sürümü eklenemedi: {detail}",
   "stream-install-custom-added": "{name} eklendi",
   "stream-install-custom-desc": "Sürüme bir ad ve .tar.gz/.tar.xz arşivinin URL'sini verin. İlk kullanımda indirilir.",

@@ -451,6 +451,8 @@
   "sort-size": "Размер",
   "states": "Состояния",
   "stopped": "Остановлено",
+  "stream-install-auto-mode": "Автоматический режим",
+  "stream-install-auto-mode-desc": "Считывает экран установщика с помощью OCR и нажимает за вас «Далее», «Принимаю», «Установить» и «Готово». Если он застрянет, вас попросят продолжить вручную. Можно переключать для каждой установки.",
   "stream-install-custom-add-error": "Не удалось добавить сборку Proton: {detail}",
   "stream-install-custom-added": "{name} добавлена",
   "stream-install-custom-desc": "Задайте сборке имя и URL её архива .tar.gz/.tar.xz. Она скачивается при первом использовании.",

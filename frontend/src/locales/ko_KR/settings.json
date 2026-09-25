@@ -451,6 +451,8 @@
   "sort-size": "크기",
   "states": "상태",
   "stopped": "중지됨",
+  "stream-install-auto-mode": "자동 모드",
+  "stream-install-auto-mode-desc": "OCR로 설치 프로그램 화면을 읽고 다음, 동의, 설치, 완료 버튼을 대신 눌러 줍니다. 막히면 수동으로 계속하라는 알림이 표시됩니다. 설치마다 전환할 수 있습니다.",
   "stream-install-custom-add-error": "Proton 빌드를 추가할 수 없습니다: {detail}",
   "stream-install-custom-added": "{name} 추가됨",
   "stream-install-custom-desc": "빌드 이름과 .tar.gz/.tar.xz 아카이브의 URL을 입력하세요. 처음 사용할 때 다운로드됩니다.",
