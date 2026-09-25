@@ -12,12 +12,18 @@ from fastapi import Request, status
 from pydantic import BaseModel
 from rq.command import send_stop_job_command
 from starlette.authentication import requires
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import FileResponse, StreamingResponse
 from starlette.websockets import WebSocketState
 
 from config import DEV_MODE, INSTALL_MAX_CONCURRENCY, INSTALL_WORKER_HOST, ROMM_BASE_URL
+from config.config_manager import config_manager as cm
 from decorators.auth import protected_route
 from endpoints.responses.install import (
+    CustomProtonBuildForm,
+    InstallCacheClearSchema,
+    InstallCacheEntrySchema,
+    InstallCacheSchema,
     InstallCandidatesSchema,
     InstallCandidateSchema,
     InstallDashboardEntrySchema,
@@ -33,6 +39,7 @@ from endpoints.responses.install import (
     ProtonDownloadProgressSchema,
     ProtonDownloadResponseSchema,
 )
+from exceptions.config_exceptions import ConfigNotWritableException
 from exceptions.endpoint_exceptions import (
     InstallConcurrencyLimitException,
     InstallSessionHasViewersException,
@@ -48,10 +55,12 @@ from handler.auth.dependencies import assert_rom_visible
 from handler.database import db_install_session_handler, db_rom_handler
 from handler.filesystem import fs_rom_handler
 from handler.filesystem.installer_detection import (
+    ARCHIVE_SOURCE_KINDS,
     INSTALLABLE_PLATFORM_SLUGS,
-    pick_confident_installer,
+    pick_default_installer,
 )
 from handler.install import bandwidth, stream_presence
+from handler.install.archive_prescan import is_archive_candidate, list_source_candidates
 from handler.install.manifest import (
     find_manifest_entry,
     live_view_of_final_manifest,
@@ -59,7 +68,14 @@ from handler.install.manifest import (
     read_live_manifest,
     read_manifest,
 )
-from handler.install.proton_builds import list_proton_builds, resolve_effective_build
+from handler.install.proton_builds import (
+    CUSTOM_ID_PREFIX,
+    custom_build_id,
+    get_custom_builds,
+    list_proton_builds,
+    remove_build,
+    resolve_effective_build,
+)
 from handler.install.queue_status import has_install_worker
 from handler.install.runner import enqueue_install
 from handler.install.stream_copy import enqueue_stream_copy
@@ -71,10 +87,19 @@ from models.install_session import (
     InstallSession,
     InstallSessionState,
 )
-from utils.install_cache import clear_session_cache, resolve_expires_at, session_cache_dir
+from utils.install_cache import (
+    cache_root_dirs,
+    clear_session_cache,
+    dir_size_bytes,
+    purge_superseded_sessions,
+    resolve_expires_at,
+    session_cache_dir,
+)
 from utils.nginx import FileRedirectResponse, ZipContentLine, ZipResponse
 from utils.zip_cache import ensure_zipfile_writable
 from utils.router import APIRouter
+from utils.ssrf import validate_url_for_http_request
+from utils.validation import ValidationError
 
 router = APIRouter()
 
@@ -85,6 +110,10 @@ class InstallStartForm(BaseModel):
     # Relative path of the installer to run. Required when the ROM needs an
     # installer and none was auto-detected (needs_manual_pick was true).
     installer_path: str | None = None
+    # Archive or disc image (relative to the ROM's directory) holding the
+    # installer. When set, `installer_path` names the executable inside it
+    # (None picks the top-ranked one after unpacking).
+    source_path: str | None = None
     # Proton build id to run this installer under (see
     # handler.install.proton_builds). None (or an unknown/uninstalled id)
     # falls back to the server default.
@@ -106,6 +135,24 @@ def _session_schema(rom_id: int, session: InstallSession) -> InstallSessionSchem
     if schema.state == InstallSessionState.AWAITING_INSTALLER:
         schema.manual_install_url = f"{ROMM_BASE_URL}/rom/{rom_id}/install"
     return schema
+
+
+def _pick_reusable_session(sessions: list[InstallSession]) -> InstallSession | None:
+    """The session that owns this game's install cache: the newest one whose
+    cache directory exists, preferring a finished install over a partial one."""
+    with_cache = [
+        x
+        for x in sessions
+        if session_cache_dir(x.id).is_dir()
+        or x.state in (InstallSessionState.DETECTING, InstallSessionState.AWAITING_INSTALLER)
+    ]
+    if not with_cache:
+        return None
+    with_cache.sort(
+        key=lambda x: (x.state == InstallSessionState.DONE, x.created_at, x.id),
+        reverse=True,
+    )
+    return with_cache[0]
 
 
 def _resolve_session(
@@ -141,8 +188,13 @@ def _resolve_session(
 async def get_install_candidates(
     request: Request,
     id: Annotated[int, PathVar(description="Rom internal id.", ge=1)],
+    source: str | None = None,
 ) -> InstallCandidatesSchema:
     """Detect installer candidates for a Windows ROM.
+
+    With `source` (an archive or disc image from the ROM's own candidates),
+    lists the executables inside it instead, read from its member listing
+    without extracting anything.
 
     Returns a ranked list of files that could serve as the installer entry
     point. When nothing is detected the client must present a manual file
@@ -162,7 +214,19 @@ async def get_install_candidates(
 
     is_installable = rom.platform.slug in INSTALLABLE_PLATFORM_SLUGS
 
-    candidates = fs_rom_handler.get_installer_candidates(rom)
+    if source is not None:
+        try:
+            source_abs = Path(fs_rom_handler.resolve_installer_abs_path(rom, source))
+        except (ValueError, FileNotFoundError) as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        if not is_archive_candidate(source_abs):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Source is not an archive or disc image",
+            )
+        candidates = await run_in_threadpool(list_source_candidates, source_abs)
+    else:
+        candidates = fs_rom_handler.get_installer_candidates(rom)
 
     return InstallCandidatesSchema(
         rom_id=rom.id,
@@ -211,15 +275,14 @@ async def start_install_session(
       cli/romm-install-cli.py's own docstring. A client that wants the old
       cache gone first calls `DELETE /{id}/install` before this, same as
       always.
-    - No installer chosen? Tries to resolve one itself first
-      (`pick_confident_installer`, the same "well-known installer name"
-      threshold the web UI used to apply client-side) before ever asking a
-      human. Only when that fails does the session sit in
-      AWAITING_INSTALLER with `manual_install_url` set - "manual mode": a
-      person has to pick a file (and watch the installer's own dialogs)
+    - No installer chosen? Behaves as if Install was pressed on the web
+      Install page: the top-ranked candidate is used (`pick_default_installer`),
+      including an archive or disc image, whose executable is then picked
+      after unpacking it (`source_path` records the archive). Only a ROM
+      with no candidate at all sits in AWAITING_INSTALLER with
+      `manual_install_url` set - "manual mode": a person has to pick a file
       through the web Install page. There's no "auto mode" (e.g. OCR-driven,
-      clicking through it unattended) yet - AWAITING_INSTALLER is the only
-      outcome for now when auto-pick can't confidently decide.
+      clicking through the installer's own dialogs) yet.
     - Otherwise (Windows with a resolved path, or any non-Windows ROM): the
       sandbox runner (or stream-copy) is enqueued immediately.
     """
@@ -228,27 +291,27 @@ async def start_install_session(
         raise RomNotFoundInDatabaseException(id)
     assert_rom_visible(request, rom)
 
-    latest = db_install_session_handler.get_latest_session_for_rom(
-        rom.id, request.user.id
-    )
-    if latest and latest.state in RUNNING_INSTALL_STATES:
-        return _session_schema(rom.id, latest)
-    # DONE/FAILED/EXPIRED (or None) has nothing running worth protecting -
-    # a fresh POST always starts a genuinely new attempt for any of them.
-    # DETECTING/AWAITING_INSTALLER (never enqueued) is the only case
-    # actually resumed below, updated in place rather than left to
-    # accumulate a duplicate row per retry.
-    existing = latest if latest and latest.state in ACTIVE_INSTALL_STATES else None
+    # One install cache per game: pressing Install again installs into the
+    # same cache (and Wine prefix), so a patch finds the game it patches.
+    rom_sessions = db_install_session_handler.get_sessions_for_rom(rom.id)
+    running = next((x for x in rom_sessions if x.state in RUNNING_INSTALL_STATES), None)
+    if running:
+        return _session_schema(rom.id, running)
+    existing = _pick_reusable_session(rom_sessions)
 
     is_installable = rom.platform.slug in INSTALLABLE_PLATFORM_SLUGS
 
     installer_path = data.installer_path
-    if is_installable and installer_path is None:
+    source_path = data.source_path
+    if is_installable and installer_path is None and source_path is None:
         candidates = fs_rom_handler.get_installer_candidates(rom)
-        confident = pick_confident_installer(candidates)
-        if confident is not None:
-            installer_path = confident.path
-    needs_manual_pick = is_installable and not installer_path
+        default = pick_default_installer(candidates)
+        if default is not None:
+            if default.kind in ARCHIVE_SOURCE_KINDS:
+                source_path = default.path
+            else:
+                installer_path = default.path
+    needs_manual_pick = is_installable and not installer_path and not source_path
 
     # Resolved now (not left NULL for the worker to decide implicitly) so the
     # client can poll /install/proton/{id}/progress and show "Downloading
@@ -261,17 +324,22 @@ async def start_install_session(
         if needs_manual_pick
         else InstallSessionState.DETECTING
     )
+    previous_state = existing.state if existing else None
     if existing:
-        # Never enqueued, and this call has something new to offer (a
-        # resolved path this time, or at least a fresh detection attempt) -
-        # update in place rather than creating a second row for the same
-        # in-progress attempt.
         session = db_install_session_handler.update_session(
             existing.id,
             {
+                "user_id": request.user.id,
                 "installer_path": installer_path,
+                "source_path": source_path,
+                "phase": None,
+                "phase_detail": None,
                 "proton_build": proton_build,
                 "state": initial_state,
+                "error": None,
+                "vnc_url": None,
+                "vnc_web_port": None,
+                "expires_at": resolve_expires_at(data.ttl_seconds),
             },
         )
     else:
@@ -288,10 +356,24 @@ async def start_install_session(
                 user_id=request.user.id,
                 state=initial_state,
                 installer_path=installer_path,
+                source_path=source_path,
                 proton_build=proton_build,
                 expires_at=resolve_expires_at(data.ttl_seconds),
             )
         )
+
+    def _abandon() -> None:
+        # A reused session owns the game's cache, so it goes back to what it
+        # was instead of being deleted.
+        if existing and previous_state is not None:
+            db_install_session_handler.update_session(
+                session.id, {"state": previous_state}
+            )
+        else:
+            db_install_session_handler.delete_session(session.id)
+
+    # Duplicates left by older versions (one cache per attempt).
+    purge_superseded_sessions(rom.id, session.id)
 
     # A ROM in INSTALLABLE_PLATFORM_SLUGS with a resolved installer can start
     # running immediately; one still awaiting a manual pick stays in
@@ -301,7 +383,7 @@ async def start_install_session(
         return _session_schema(rom.id, session)
 
     if db_install_session_handler.count_running_sessions() >= INSTALL_MAX_CONCURRENCY:
-        db_install_session_handler.delete_session(session.id)
+        _abandon()
         raise InstallConcurrencyLimitException(INSTALL_MAX_CONCURRENCY)
 
     # Without this, enqueueing onto an unattended queue leaves the session
@@ -309,7 +391,7 @@ async def start_install_session(
     # trigger a failure, so the client polls indefinitely for a state change
     # that will never come.
     if not has_install_worker():
-        db_install_session_handler.delete_session(session.id)
+        _abandon()
         raise InstallWorkerUnavailableException()
 
     if is_installable:
@@ -497,10 +579,86 @@ async def get_proton_builds(request: Request) -> ProtonBuildsSchema:
                 path=b.path,
                 source=b.source,
                 size_bytes=b.size_bytes,
+                custom=b.custom,
             )
             for b in list_proton_builds()
         ]
     )
+
+
+@protected_route(
+    router.post,
+    "/install/proton-builds/custom",
+    [Scope.PLATFORMS_WRITE],
+)
+async def add_custom_proton_build(
+    request: Request, data: Annotated[CustomProtonBuildForm, Body()]
+) -> ProtonBuildSchema:
+    """Add a user-supplied Proton build (name + tarball URL).
+
+    It is listed with the other builds and downloaded on first use, through
+    the same worker download path as the upstream ones.
+    """
+    name = data.name.strip()
+    url = data.url.strip()
+    if not name or len(name) > 64:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Name must be 1-64 characters",
+        )
+    build_id = custom_build_id(name)
+    if build_id == CUSTOM_ID_PREFIX:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Name must contain letters or digits",
+        )
+    try:
+        validate_url_for_http_request(url, "Download URL")
+    except ValidationError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    existing = get_custom_builds()
+    if any(custom_build_id(b["name"]) == build_id for b in existing):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A custom build named '{name}' already exists",
+        )
+    try:
+        cm.update_install_settings(
+            download_speed_limit_bytes_per_sec=cm.config.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC,
+            custom_proton_builds=[*existing, {"name": name, "url": url}],
+        )
+    except ConfigNotWritableException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.message
+        ) from exc
+    return ProtonBuildSchema(
+        id=build_id, label=name, installed=False, source="upstream", custom=True
+    )
+
+
+@protected_route(
+    router.delete,
+    "/install/proton-builds/custom/{build_id}",
+    [Scope.PLATFORMS_WRITE],
+)
+async def delete_custom_proton_build(request: Request, build_id: str) -> None:
+    """Remove a user-added build from the list (and its files, if extracted
+    where this process can see them)."""
+    existing = get_custom_builds()
+    remaining = [b for b in existing if custom_build_id(b["name"]) != build_id]
+    if len(remaining) == len(existing):
+        raise ProtonBuildNotFoundException(build_id)
+    try:
+        cm.update_install_settings(
+            download_speed_limit_bytes_per_sec=cm.config.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC,
+            custom_proton_builds=remaining,
+        )
+    except ConfigNotWritableException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.message
+        ) from exc
+    remove_build(build_id)
 
 
 @protected_route(
@@ -565,7 +723,6 @@ async def delete_proton_build(
     Only builds under PROTON_INSTALL_ROOT that were downloaded at runtime
     can be removed; baked-in image builds are not affected.
     """
-    from handler.install.proton_builds import remove_build
 
     remove_build(build_id)
     return {"message": f"Proton build {build_id} removed"}
@@ -605,6 +762,109 @@ async def install_dashboard(request: Request) -> InstallDashboardSchema:
             )
         )
     return InstallDashboardSchema(entries=entries)
+
+
+def _build_cache_listing() -> InstallCacheSchema:
+    sessions = {s.id: s for s in db_install_session_handler.get_all_sessions()}
+    entries: list[InstallCacheEntrySchema] = []
+    total = 0
+    for directory in cache_root_dirs():
+        size = dir_size_bytes(directory)
+        total += size
+        session = sessions.get(int(directory.name)) if directory.name.isdigit() else None
+        if session is None:
+            continue
+        rom = db_rom_handler.get_rom(session.rom_id)
+        entries.append(
+            InstallCacheEntrySchema(
+                session_id=session.id,
+                rom_id=session.rom_id,
+                rom_name=rom.name if rom else None,
+                platform_slug=rom.platform_slug if rom else None,
+                user_id=session.user_id,
+                state=session.state,
+                size_bytes=size,
+                created_at=session.created_at,
+                updated_at=session.updated_at,
+                expires_at=session.expires_at,
+            )
+        )
+    return InstallCacheSchema(total_bytes=total, entries=entries)
+
+
+def _remove_cache_dir(directory: Path) -> int:
+    """Delete one cache directory and its session row (when it has one).
+    Returns the bytes freed, or -1 when the session is still running."""
+    if not directory.name.isdigit():
+        return 0
+    session = db_install_session_handler.get_session(int(directory.name))
+    if session is not None and session.state in RUNNING_INSTALL_STATES:
+        return -1
+    freed = dir_size_bytes(directory)
+    clear_session_cache(int(directory.name))
+    if session is not None:
+        db_install_session_handler.delete_session(session.id)
+    return freed
+
+
+@protected_route(
+    router.get,
+    "/install/cache",
+    [Scope.PLATFORMS_WRITE],
+)
+async def get_install_cache(request: Request) -> InstallCacheSchema:
+    """Every install cache on disk with its size and age, plus the total.
+
+    Backs the Settings cache manager. Covers all users' installs, hence the
+    admin-level scope.
+    """
+    return await run_in_threadpool(_build_cache_listing)
+
+
+@protected_route(
+    router.delete,
+    "/install/cache/{session_id}",
+    [Scope.PLATFORMS_WRITE],
+    responses={status.HTTP_404_NOT_FOUND: {}},
+)
+async def delete_install_cache_entry(
+    request: Request,
+    session_id: Annotated[int, PathVar(description="Install session id.", ge=1)],
+) -> InstallCacheClearSchema:
+    """Delete one install cache (and its session). Refuses (409) while the
+    install is still running."""
+    directory = session_cache_dir(session_id)
+    session = db_install_session_handler.get_session(session_id)
+    if session is None and not directory.is_dir():
+        raise InstallSessionNotFoundException(session_id)
+    if session is not None and session.state in RUNNING_INSTALL_STATES:
+        raise InstallSessionRunningException(session.rom_id)
+    freed = await run_in_threadpool(_remove_cache_dir, directory)
+    return InstallCacheClearSchema(removed=1, freed_bytes=max(freed, 0), skipped=0)
+
+
+@protected_route(
+    router.delete,
+    "/install/cache",
+    [Scope.PLATFORMS_WRITE],
+)
+async def delete_all_install_caches(request: Request) -> InstallCacheClearSchema:
+    """Delete every install cache, leaving running installs alone."""
+
+    def _run() -> InstallCacheClearSchema:
+        removed = skipped = freed_total = 0
+        for directory in cache_root_dirs():
+            freed = _remove_cache_dir(directory)
+            if freed < 0:
+                skipped += 1
+            else:
+                removed += 1
+                freed_total += freed
+        return InstallCacheClearSchema(
+            removed=removed, freed_bytes=freed_total, skipped=skipped
+        )
+
+    return await run_in_threadpool(_run)
 
 
 # Request headers that must never be forwarded upstream (RFC 7230 6.1
