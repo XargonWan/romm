@@ -121,12 +121,16 @@ class InstallSettingsPayload(BaseModel):
 
     ``cache_ttl_days`` is how long new install caches live before being
     evicted; ``0`` means unlimited. ``None`` leaves it unchanged.
+
+    ``auto_mode`` is the experimental default for OCR-driven auto mode on new
+    install sessions (off by default). ``None`` leaves it unchanged.
     """
 
     download_speed_limit_bytes_per_sec: int | None = None
     default_proton_build: str | None = None
     stream_uncompleted_files: bool | None = None
     cache_ttl_days: int | None = None
+    auto_mode: bool | None = None
 
     @field_validator("cache_ttl_days")
     @classmethod
@@ -196,6 +200,7 @@ def get_config(request: Request) -> ConfigResponse:
         INSTALL_DEFAULT_PROTON_BUILD=cfg.INSTALL_DEFAULT_PROTON_BUILD,
         INSTALL_STREAM_UNCOMPLETED_FILES=cfg.INSTALL_STREAM_UNCOMPLETED_FILES,
         INSTALL_CACHE_TTL_DAYS=cfg.INSTALL_CACHE_TTL_DAYS,
+        INSTALL_AUTO_MODE=cfg.INSTALL_AUTO_MODE,
     )
 
 
@@ -342,6 +347,7 @@ async def update_install_settings(
             default_proton_build=payload.default_proton_build,
             stream_uncompleted_files=payload.stream_uncompleted_files,
             cache_ttl_days=payload.cache_ttl_days,
+            auto_mode=payload.auto_mode,
         )
     except ConfigNotWritableException as exc:
         log.critical(exc.message)

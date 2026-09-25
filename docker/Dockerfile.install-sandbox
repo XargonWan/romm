@@ -20,7 +20,9 @@
 #   - Proton (GE-Proton / Proton-CachyOS, downloaded at runtime, see below):
 #     runs Windows installers; plain Wine (also installed, as Proton's own
 #     base) is the fallback if no build is installed or configured
-#   - tesseract-ocr + xdotool: auto-clicker to drive "Next" dialogs (Phase 4)
+#   - tesseract-ocr (eng/ita/deu/fra/spa/jpn/chi) + xdotool: the experimental
+#     auto mode (handler/install/auto_mode) reads installer dialogs and
+#     presses their buttons
 #
 # Build:  docker build -f docker/Dockerfile.install-sandbox -t romm-install-sandbox .
 # This image is meant to run the RQ worker that executes install jobs, not the
@@ -50,6 +52,14 @@ RUN dpkg --add-architecture i386 && \
     icewm \
     picom \
     tesseract-ocr \
+    tesseract-ocr-eng \
+    tesseract-ocr-ita \
+    tesseract-ocr-deu \
+    tesseract-ocr-fra \
+    tesseract-ocr-spa \
+    tesseract-ocr-jpn \
+    tesseract-ocr-chi-sim \
+    tesseract-ocr-chi-tra \
     wine \
     wine32:i386 \
     ca-certificates \

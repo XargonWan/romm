@@ -233,6 +233,12 @@ class Config:
     # User-added Proton builds: [{"name": ..., "url": ...}]. Listed next to the
     # upstream builds and downloaded on first use.
     INSTALL_CUSTOM_PROTON_BUILDS: list[dict[str, str]]
+    # Experimental: default for "auto mode" (OCR-driven clicking through the
+    # installer's dialogs) on new install sessions. Off unless enabled.
+    INSTALL_AUTO_MODE: bool
+    # Extra auto-mode buttons appended to the built-in catalog
+    # (handler/install/auto_mode/buttons.yml), same entry shape.
+    INSTALL_AUTO_MODE_EXTRA_BUTTONS: list[dict]
 
     def __init__(self, **entries):
         self.__dict__.update(entries)
@@ -585,6 +591,12 @@ class ConfigManager:
             INSTALL_CUSTOM_PROTON_BUILDS=pydash.get(
                 self._raw_config, "install.custom_proton_builds", []
             ),
+            INSTALL_AUTO_MODE=bool(
+                pydash.get(self._raw_config, "install.auto_mode", False)
+            ),
+            INSTALL_AUTO_MODE_EXTRA_BUTTONS=pydash.get(
+                self._raw_config, "install.auto_mode_extra_buttons", []
+            ),
         )
 
     def _get_ejs_controls(self) -> dict[str, EjsControls]:
@@ -913,6 +925,17 @@ class ConfigManager:
             )
             sys.exit(3)
 
+        extra_buttons = self.config.INSTALL_AUTO_MODE_EXTRA_BUTTONS
+        if not isinstance(extra_buttons, list) or not all(
+            isinstance(b, dict) and isinstance(b.get("labels"), list)
+            for b in extra_buttons
+        ):
+            log.critical(
+                "Invalid config.yml: install.auto_mode_extra_buttons must be a "
+                "list of {category, labels} entries"
+            )
+            sys.exit(3)
+
         if self.config.INSTALL_DEFAULT_PROTON_BUILD is not None and (
             not isinstance(self.config.INSTALL_DEFAULT_PROTON_BUILD, str)
             or not self.config.INSTALL_DEFAULT_PROTON_BUILD.strip()
@@ -1014,6 +1037,8 @@ class ConfigManager:
                 ),
                 "cache_ttl_days": self.config.INSTALL_CACHE_TTL_DAYS,
                 "custom_proton_builds": self.config.INSTALL_CUSTOM_PROTON_BUILDS,
+                "auto_mode": self.config.INSTALL_AUTO_MODE,
+                "auto_mode_extra_buttons": self.config.INSTALL_AUTO_MODE_EXTRA_BUTTONS,
             },
         }
 
@@ -1147,6 +1172,7 @@ class ConfigManager:
         stream_uncompleted_files: bool | None = None,
         cache_ttl_days: int | None = None,
         custom_proton_builds: list[dict[str, str]] | None = None,
+        auto_mode: bool | None = None,
     ) -> None:
         """Set global install settings and persist them to config.yml.
 
@@ -1161,6 +1187,8 @@ class ConfigManager:
         ``cache_ttl_days`` is the lifetime of new install caches (0 =
         unlimited); ``custom_proton_builds`` replaces the user-added build
         list. Both leave the stored value unchanged when ``None``.
+        ``auto_mode`` is the default for the experimental OCR auto mode on new
+        sessions (``None`` leaves it unchanged).
         """
         self.config.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC = (
             download_speed_limit_bytes_per_sec
@@ -1173,6 +1201,8 @@ class ConfigManager:
             self.config.INSTALL_CACHE_TTL_DAYS = cache_ttl_days
         if custom_proton_builds is not None:
             self.config.INSTALL_CUSTOM_PROTON_BUILDS = custom_proton_builds
+        if auto_mode is not None:
+            self.config.INSTALL_AUTO_MODE = auto_mode
         self._update_config_file()
 
 

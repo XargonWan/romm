@@ -95,6 +95,23 @@ PROTON_INSTALL_ROOT: Final[str] = _get_env("PROTON_INSTALL_ROOT") or "/opt/proto
 # "GE-Proton10-34"). Falls back to the first installed build if unset or None.
 INSTALL_DEFAULT_PROTON_BUILD: Final[str | None] = _get_env("INSTALL_DEFAULT_PROTON_BUILD") or None
 
+# Auto mode (experimental): OCR-driven clicking through installer dialogs.
+# Tesseract language codes joined with "+" (the sandbox image ships these),
+# tried when the fast passes below find no button.
+INSTALL_AUTO_OCR_LANGS: Final[str] = (
+    _get_env("INSTALL_AUTO_OCR_LANGS") or "eng+ita+deu+fra+spa+jpn+chi_sim+chi_tra"
+)
+# Languages for the fast passes (every tick). Each extra language slows OCR
+# down a lot on a busy worker, so the full list above is only a last resort.
+INSTALL_AUTO_OCR_DEEP_LANGS: Final[str] = (
+    _get_env("INSTALL_AUTO_OCR_DEEP_LANGS") or "eng+ita"
+)
+# Seconds with no known button, no page change and no file growth before auto
+# mode tells the user to continue by hand.
+INSTALL_AUTO_STUCK_SECONDS: Final[int] = max(
+    10, safe_int(_get_env("INSTALL_AUTO_STUCK_SECONDS"), 60)
+)
+
 # ROM UPLOADS
 # Chunked upload parts are staged on disk, under RESOURCES_BASE_PATH by default.
 ROM_UPLOAD_TMP_BASE: Final[Path] = (

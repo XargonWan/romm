@@ -41,3 +41,4 @@ class ConfigResponse(TypedDict):
     INSTALL_DEFAULT_PROTON_BUILD: str | None
     INSTALL_STREAM_UNCOMPLETED_FILES: bool
     INSTALL_CACHE_TTL_DAYS: int
+    INSTALL_AUTO_MODE: bool
