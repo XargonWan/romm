@@ -260,6 +260,33 @@ class TestStartInstallSession:
         assert body["state"] == InstallSessionState.INSTALLING.value
         mock_enqueue.assert_called_once()
 
+    def test_auto_mode_is_off_by_default_and_opt_in_per_request(
+        self, client: TestClient, access_token: str, win_rom: Rom
+    ):
+        with (
+            patch("endpoints.roms.install.has_install_worker", return_value=True),
+            patch("endpoints.roms.install.enqueue_install", return_value="job-1"),
+        ):
+            off = client.post(
+                f"/api/roms/{win_rom.id}/install",
+                json={"installer_path": "setup.exe"},
+                headers=_auth(access_token),
+            )
+        assert off.status_code == status.HTTP_200_OK
+        assert off.json()["auto_mode"] is False
+        db_install_session_handler.delete_session(off.json()["id"])
+
+        with (
+            patch("endpoints.roms.install.has_install_worker", return_value=True),
+            patch("endpoints.roms.install.enqueue_install", return_value="job-2"),
+        ):
+            on = client.post(
+                f"/api/roms/{win_rom.id}/install",
+                json={"installer_path": "setup.exe", "auto_mode": True},
+                headers=_auth(access_token),
+            )
+        assert on.json()["auto_mode"] is True
+
     def test_proton_build_round_trips_into_the_session(
         self, client: TestClient, access_token: str, win_rom: Rom
     ):
@@ -1381,3 +1408,40 @@ class TestInstallDashboard:
         )
         r = client.get("/api/roms/install/dashboard", headers=_auth(access_token))
         assert r.json()["entries"] == []
+
+
+class TestSetInstallAutoMode:
+    def test_toggles_the_flag_and_clears_the_status(
+        self, client: TestClient, access_token: str, win_rom: Rom, admin_user: User
+    ):
+        db_install_session_handler.add_session(
+            InstallSession(
+                rom_id=win_rom.id,
+                user_id=admin_user.id,
+                state=InstallSessionState.INSTALLING,
+                installer_path="setup.exe",
+                auto_mode=True,
+                auto_status="needs_manual",
+                auto_detail="No known button on screen",
+            )
+        )
+        r = client.patch(
+            f"/api/roms/{win_rom.id}/install/auto-mode",
+            json={"enabled": False},
+            headers=_auth(access_token),
+        )
+        assert r.status_code == status.HTTP_200_OK
+        body = r.json()
+        assert body["auto_mode"] is False
+        assert body["auto_status"] is None
+        assert body["auto_detail"] is None
+
+    def test_missing_session_404s(
+        self, client: TestClient, access_token: str, win_rom: Rom
+    ):
+        r = client.patch(
+            f"/api/roms/{win_rom.id}/install/auto-mode",
+            json={"enabled": True},
+            headers=_auth(access_token),
+        )
+        assert r.status_code == status.HTTP_404_NOT_FOUND

@@ -914,3 +914,31 @@ class TestLiveManifestLoop:
         assert len(entries) == 1
         assert entries[0].path == "Some Game/data.bin"
         assert (work_dir / entries[0].path).read_bytes() == b"final content"
+
+
+class TestRunInstallerAutoMode:
+    def test_auto_mode_thread_starts_only_when_a_session_is_given(self, monkeypatch, tmp_path):
+        started = []
+
+        class FakeProc:
+            def wait(self, timeout=None):
+                return 0
+
+        monkeypatch.setattr(runner.subprocess, "Popen", lambda argv: FakeProc())
+        monkeypatch.setattr(
+            runner, "_focus_maintenance_loop", lambda display, stop: None
+        )
+
+        def fake_start(session_id, display, work_dir, stop):
+            started.append((session_id, display, work_dir))
+            thread = runner.threading.Thread(target=lambda: None)
+            thread.start()
+            return thread
+
+        monkeypatch.setattr(runner, "start_auto_mode", fake_start)
+
+        runner._run_installer(["true"], ":50")
+        assert started == []
+
+        runner._run_installer(["true"], ":50", auto_mode_session=(7, tmp_path))
+        assert started == [(7, ":50", tmp_path)]
