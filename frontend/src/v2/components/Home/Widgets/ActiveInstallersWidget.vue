@@ -34,7 +34,17 @@ function isActive(entry: InstallDashboardEntrySchema): boolean {
   return ACTIVE_STATES.includes(entry.session.state);
 }
 
+// Auto mode (experimental) is stuck: the user has to continue by hand.
+function needsManual(entry: InstallDashboardEntrySchema): boolean {
+  return (
+    isActive(entry) &&
+    (entry.session as { auto_status?: string | null }).auto_status ===
+      "needs_manual"
+  );
+}
+
 function statusLabel(entry: InstallDashboardEntrySchema): string {
+  if (needsManual(entry)) return t("rom.install-auto-mode-needs-manual-short");
   switch (entry.session.state) {
     case "streaming":
       return t("rom.install-copying");
@@ -84,9 +94,15 @@ function openEntry(entry: InstallDashboardEntrySchema) {
             :class="{
               'r-v2-widget-installs__status--done':
                 entry.session.state === 'done',
+              'r-v2-widget-installs__status--warn': needsManual(entry),
             }"
           >
-            <RSpinner v-if="isActive(entry)" :size="10" />
+            <RIcon
+              v-if="needsManual(entry)"
+              icon="mdi-hand-back-right-outline"
+              size="11"
+            />
+            <RSpinner v-else-if="isActive(entry)" :size="10" />
             <RIcon v-else icon="mdi-check-circle-outline" size="11" />
             {{ statusLabel(entry) }}
           </span>
@@ -159,5 +175,9 @@ function openEntry(entry: InstallDashboardEntrySchema) {
 }
 .r-v2-widget-installs__status--done {
   color: var(--r-color-success);
+}
+
+.r-v2-widget-installs__status--warn {
+  color: var(--r-color-warning);
 }
 </style>
