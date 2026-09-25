@@ -13,6 +13,9 @@ services:
       - ROMM_BASE_PATH=/app/romm
       - PROTON_INSTALL_ROOT=/opt/proton
       - INSTALL_DEFAULT_PROTON_BUILD=cachyos-latest
+      # Container name the backend proxies the install VNC view to. Must
+      # match the sandbox's container_name below (both read the same variable).
+      - INSTALL_WORKER_HOST=${INSTALL_WORKER_HOST:-romm-install-sandbox}
     ports:
       - "3000:3000" # Vite dev server (custom)
       - "5173:5173" # Vite dev server (default)
@@ -71,7 +74,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.install-sandbox
-    container_name: romm-install-sandbox
+    container_name: ${INSTALL_WORKER_HOST:-romm-install-sandbox}
     restart: unless-stopped
     # Cancelling an install stops its RQ job with an uncatchable SIGKILL to
     # the whole process group (Xvfb/x11vnc/websockify/bwrap included), so

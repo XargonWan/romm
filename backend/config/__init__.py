@@ -47,7 +47,7 @@ INSTALL_CACHE_PATH: Final[str] = f"{ROMM_BASE_PATH}/cache/installs"
 # Default lifetime of an install cache before the cleanup task evicts it.
 INSTALL_CACHE_DEFAULT_TTL: Final[int] = safe_int(
     _get_env("INSTALL_CACHE_DEFAULT_TTL"),
-    172800,  # 48 hours
+    0,  # unlimited
 )
 # Upper bound on concurrent install sessions to bound CPU/RAM/disk use.
 INSTALL_MAX_CONCURRENCY: Final[int] = max(

@@ -118,11 +118,22 @@ class InstallSettingsPayload(BaseModel):
     files" toggle - see handler.install.manifest.scan_live_manifest's own
     ``aggressive`` param for what it actually changes. ``None`` leaves it
     unchanged.
+
+    ``cache_ttl_days`` is how long new install caches live before being
+    evicted; ``0`` means unlimited. ``None`` leaves it unchanged.
     """
 
     download_speed_limit_bytes_per_sec: int | None = None
     default_proton_build: str | None = None
     stream_uncompleted_files: bool | None = None
+    cache_ttl_days: int | None = None
+
+    @field_validator("cache_ttl_days")
+    @classmethod
+    def validate_ttl(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("cache_ttl_days must not be negative")
+        return value
 
     @field_validator("download_speed_limit_bytes_per_sec")
     @classmethod
@@ -184,6 +195,7 @@ def get_config(request: Request) -> ConfigResponse:
         INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC=cfg.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC,
         INSTALL_DEFAULT_PROTON_BUILD=cfg.INSTALL_DEFAULT_PROTON_BUILD,
         INSTALL_STREAM_UNCOMPLETED_FILES=cfg.INSTALL_STREAM_UNCOMPLETED_FILES,
+        INSTALL_CACHE_TTL_DAYS=cfg.INSTALL_CACHE_TTL_DAYS,
     )
 
 
@@ -329,6 +341,7 @@ async def update_install_settings(
             download_speed_limit_bytes_per_sec=payload.download_speed_limit_bytes_per_sec,
             default_proton_build=payload.default_proton_build,
             stream_uncompleted_files=payload.stream_uncompleted_files,
+            cache_ttl_days=payload.cache_ttl_days,
         )
     except ConfigNotWritableException as exc:
         log.critical(exc.message)

@@ -20,7 +20,7 @@ An install session moves through:
 | State                | Meaning                                                      |
 | -------------------- | ------------------------------------------------------------ |
 | `detecting`          | Looking for installer candidates inside the ROM's files      |
-| `awaiting_installer` | Waiting on a manual installer-file pick (ambiguous ROM)      |
+| `awaiting_installer` | Waiting on a manual installer-file pick (no candidate found) |
 | `installing`         | Sandbox is up, installer is running, VNC is available        |
 | `streaming`          | Non-Windows ROM being copied straight through (no installer) |
 | `done`               | Finished; the final manifest and files are available         |
@@ -29,15 +29,22 @@ An install session moves through:
 
 `detecting`, `awaiting_installer`, `installing` and `streaming` are the _active_ states.
 
+While `installing` and before the VNC window exists, the session carries `phase` (`extracting` for an archive, `mounting` for a disc image) and `phase_detail` (the file name), e.g. "Extracting MyGame.zip". A client can render them as-is; both are `null` otherwise. `source_path` is the archive/disc image (relative to the ROM dir) the installer comes from, and `installer_path` the executable inside it. Disc images are read with 7z (extracted into a scratch dir), not kernel-mounted; CHD is not readable this way.
+
 | Method | Path                       | Scope        | Description                                                            |
 | ------ | -------------------------- | ------------ | ---------------------------------------------------------------------- |
-| GET    | `/{id}/install/candidates` | ROMS_INSTALL | Detect installer entry-point candidates inside the ROM's files         |
-| POST   | `/{id}/install`            | ROMS_INSTALL | Start (or return the existing) install session                         |
+| GET    | `/{id}/install/candidates` | ROMS_INSTALL | Detect installer candidates in the ROM's files; `?source=<archive>` lists the executables inside one |
+| POST   | `/{id}/install`            | ROMS_INSTALL | Start (or return the running) session. Body: `installer_path`, `source_path`, `proton_build`, `ttl_seconds`; with nothing given it behaves like the Install page button |
 | GET    | `/{id}/install`            | ROMS_INSTALL | Get the latest install session for this ROM/user                       |
 | DELETE | `/{id}/install`            | ROMS_INSTALL | Clear the install cache and delete the session                         |
 | POST   | `/{id}/install/cancel`     | ROMS_INSTALL | Abort a running install: stop the sandbox and delete the partial cache |
 | GET    | `/install/worker-status`   | ROMS_INSTALL | Whether an install-sandbox worker is currently connected               |
-| GET    | `/install/proton-builds`   | ROMS_INSTALL | Proton builds the server knows about                                   |
+| GET    | `/install/proton-builds`   | ROMS_INSTALL | Proton builds: Proton-CachyOS Latest, GE-Proton latest of each major (>= 8), user-added |
+| POST   | `/install/proton-builds/custom` | PLATFORMS_WRITE | Add a build (`name`, `url`); downloaded on first use |
+| DELETE | `/install/proton-builds/custom/{id}` | PLATFORMS_WRITE | Remove a user-added build |
+| GET    | `/install/cache`           | PLATFORMS_WRITE | Every install cache on disk (size, age, state) plus the total |
+| DELETE | `/install/cache/{session_id}` | PLATFORMS_WRITE | Delete one cache and its session (409 while running) |
+| DELETE | `/install/cache`           | PLATFORMS_WRITE | Delete all caches, skipping running installs |
 | GET    | `/install/dashboard`       | ROMS_INSTALL | This user's active/recently-finished install sessions                  |
 
 ## 3. Stream delivery
@@ -120,8 +127,8 @@ What it does (and how it maps to this document):
 
 1. Logs in over HTTP Basic and captures the session cookie.
 2. If a session for this ROM is already `done`, skips straight to streaming - the server re-serves the cached install immediately.
-3. Otherwise it prints the detected installer candidates (`GET /{id}/install/candidates`, which works whether or not a worker is connected - it's a plain filesystem scan) and starts the session (`POST /{id}/install`). Omit `--installer-path` to let the server auto-pick; pass it only to override. A transient "worker not connected yet" (503) is retried for ~50s instead of failing outright, same as the web UI's own "Install" button - manual mode itself never needs the worker at all.
-4. If the server can't confidently auto-pick an installer, the session comes back `awaiting_installer` (the "manual mode" branch): the CLI prints `manual_install_url` and exits. Open that URL to finish the install in the browser-based VNC session, then re-run the same command to stream the result.
+3. Otherwise it prints the detected installer candidates (`GET /{id}/install/candidates`, which works whether or not a worker is connected - it's a plain filesystem scan) and starts the session (`POST /{id}/install`). Omit `--installer-path` to let the server start it like the Install page button (top candidate; an archive/disc image is unpacked and its installer picked); pass it only to override. A transient "worker not connected yet" (503) is retried for ~50s instead of failing outright, same as the web UI's own "Install" button - manual mode itself never needs the worker at all.
+4. If the ROM has no candidate at all, the session comes back `awaiting_installer` (the "manual mode" branch): the CLI prints `manual_install_url` and exits. Open that URL to finish the install in the browser-based VNC session, then re-run the same command to stream the result.
 5. While polling the session state (`GET /{id}/install`), it concurrently streams files (`GET /{id}/install/stream/manifest` and Range `GET /{id}/install/stream/{path}`) into `--out/<game name>/` - so it can start pulling bytes before the install finishes, which is the point of stream install.
 6. Supports a few extra one-off operations: `--cancel` to abort a session, `--clear` to wipe its cache, `--list-proton`/`--download-proton` to inspect and pull Proton builds. See `--help` for the full set.
 

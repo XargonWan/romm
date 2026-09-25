@@ -19,6 +19,7 @@ from config import (
     DB_PORT,
     DB_QUERY_JSON,
     DB_USER,
+    INSTALL_CACHE_DEFAULT_TTL,
     LIBRARY_BASE_PATH,
     ROMM_BASE_PATH,
     ROMM_DB_DRIVER,
@@ -27,6 +28,15 @@ from exceptions.config_exceptions import ConfigNotWritableException
 from logger.formatter import BLUE
 from logger.formatter import highlight as hl
 from logger.logger import log
+
+SECONDS_PER_DAY: Final = 86400
+
+
+def _default_cache_ttl_days() -> int:
+    """INSTALL_CACHE_DEFAULT_TTL (seconds, <= 0 unlimited) as whole days."""
+    if INSTALL_CACHE_DEFAULT_TTL <= 0:
+        return 0
+    return -(-INSTALL_CACHE_DEFAULT_TTL // SECONDS_PER_DAY)
 
 ROMM_USER_CONFIG_PATH: Final = f"{ROMM_BASE_PATH}/config"
 ROMM_USER_CONFIG_FILE: Final = f"{ROMM_USER_CONFIG_PATH}/config.yml"
@@ -217,6 +227,12 @@ class Config:
     # handler.install.manifest.scan_live_manifest's own `aggressive` param
     # for the full tradeoff.
     INSTALL_STREAM_UNCOMPLETED_FILES: bool
+    # Lifetime of a new install cache, in days. 0 means unlimited (never
+    # auto-evicted). Defaults to INSTALL_CACHE_DEFAULT_TTL when unset.
+    INSTALL_CACHE_TTL_DAYS: int
+    # User-added Proton builds: [{"name": ..., "url": ...}]. Listed next to the
+    # upstream builds and downloaded on first use.
+    INSTALL_CUSTOM_PROTON_BUILDS: list[dict[str, str]]
 
     def __init__(self, **entries):
         self.__dict__.update(entries)
@@ -561,6 +577,14 @@ class ConfigManager:
             INSTALL_STREAM_UNCOMPLETED_FILES=pydash.get(
                 self._raw_config, "install.stream_uncompleted_files", False
             ),
+            INSTALL_CACHE_TTL_DAYS=pydash.get(
+                self._raw_config,
+                "install.cache_ttl_days",
+                _default_cache_ttl_days(),
+            ),
+            INSTALL_CUSTOM_PROTON_BUILDS=pydash.get(
+                self._raw_config, "install.custom_proton_builds", []
+            ),
         )
 
     def _get_ejs_controls(self) -> dict[str, EjsControls]:
@@ -865,6 +889,30 @@ class ConfigManager:
             )
             sys.exit(3)
 
+        if (
+            not isinstance(self.config.INSTALL_CACHE_TTL_DAYS, int)
+            or isinstance(self.config.INSTALL_CACHE_TTL_DAYS, bool)
+            or self.config.INSTALL_CACHE_TTL_DAYS < 0
+        ):
+            log.critical(
+                "Invalid config.yml: install.cache_ttl_days "
+                "must be a non-negative integer"
+            )
+            sys.exit(3)
+
+        custom_builds = self.config.INSTALL_CUSTOM_PROTON_BUILDS
+        if not isinstance(custom_builds, list) or not all(
+            isinstance(b, dict)
+            and isinstance(b.get("name"), str)
+            and isinstance(b.get("url"), str)
+            for b in custom_builds
+        ):
+            log.critical(
+                "Invalid config.yml: install.custom_proton_builds must be a "
+                "list of {name, url} entries"
+            )
+            sys.exit(3)
+
         if self.config.INSTALL_DEFAULT_PROTON_BUILD is not None and (
             not isinstance(self.config.INSTALL_DEFAULT_PROTON_BUILD, str)
             or not self.config.INSTALL_DEFAULT_PROTON_BUILD.strip()
@@ -964,6 +1012,8 @@ class ConfigManager:
                 "stream_uncompleted_files": (
                     self.config.INSTALL_STREAM_UNCOMPLETED_FILES
                 ),
+                "cache_ttl_days": self.config.INSTALL_CACHE_TTL_DAYS,
+                "custom_proton_builds": self.config.INSTALL_CUSTOM_PROTON_BUILDS,
             },
         }
 
@@ -1095,6 +1145,8 @@ class ConfigManager:
         download_speed_limit_bytes_per_sec: int | None,
         default_proton_build: str | None = None,
         stream_uncompleted_files: bool | None = None,
+        cache_ttl_days: int | None = None,
+        custom_proton_builds: list[dict[str, str]] | None = None,
     ) -> None:
         """Set global install settings and persist them to config.yml.
 
@@ -1106,6 +1158,9 @@ class ConfigManager:
         don't wait for stability" toggle (see
         handler.install.manifest.scan_live_manifest's own ``aggressive``
         param) - ``None`` leaves it unchanged, matching ``default_proton_build``.
+        ``cache_ttl_days`` is the lifetime of new install caches (0 =
+        unlimited); ``custom_proton_builds`` replaces the user-added build
+        list. Both leave the stored value unchanged when ``None``.
         """
         self.config.INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC = (
             download_speed_limit_bytes_per_sec
@@ -1114,6 +1169,10 @@ class ConfigManager:
             self.config.INSTALL_DEFAULT_PROTON_BUILD = default_proton_build
         if stream_uncompleted_files is not None:
             self.config.INSTALL_STREAM_UNCOMPLETED_FILES = stream_uncompleted_files
+        if cache_ttl_days is not None:
+            self.config.INSTALL_CACHE_TTL_DAYS = cache_ttl_days
+        if custom_proton_builds is not None:
+            self.config.INSTALL_CUSTOM_PROTON_BUILDS = custom_proton_builds
         self._update_config_file()
 
 

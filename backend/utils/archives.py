@@ -567,6 +567,23 @@ def _list_archive_file_members(file_path: Path) -> list[tuple[str, int]]:
     return entries
 
 
+def list_archive_members(file_path: Path) -> list[tuple[str, int]]:
+    """List `(member_path, size)` for every file in an archive or disc image
+    without extracting anything (headers only)."""
+    lower = str(file_path).lower()
+    try:
+        if lower.endswith(_TAR_FAMILY_SUFFIXES):
+            with tarfile.open(file_path, "r:*") as tf:
+                return [(m.name, m.size) for m in tf.getmembers() if m.isfile()]
+        if lower.endswith(".zip"):
+            with zipfile.ZipFile(file_path, "r") as z:
+                return [(e.filename, e.file_size) for e in z.infolist() if not e.is_dir()]
+    except (tarfile.TarError, zipfile.BadZipFile, RuntimeError, OSError) as e:
+        log.error(f"Error listing archive {file_path}: {e}")
+        return []
+    return _list_archive_file_members(file_path)
+
+
 def _extract_member_to_dir(
     file_path: Path, member: str, dest_dir: Path, deadline: float
 ) -> Path | None:
