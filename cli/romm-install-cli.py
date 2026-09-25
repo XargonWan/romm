@@ -12,12 +12,12 @@ UI's own "Install" button (single source of truth: POST /{romId}/install
 resolves everything server-side, no client has to replicate the logic):
   - Already installed (a cache from a prior run is still on disk)? Streamed
     immediately, nothing is (re)installed.
-  - Not installed, and the server can confidently auto-pick an installer
-    (a well-known name like setup.exe, or there's only one candidate)? It
-    starts running right away, no interaction needed.
-  - Otherwise - "manual mode": nobody (human or, someday, an OCR-driven
-    "auto mode") has confirmed which file to run, or the installer itself
-    needs someone to click through its own dialogs. The session sits in
+  - Not installed? The server starts it exactly as the web Install page's
+    button would: top-ranked candidate, and for an archive or disc image it
+    unpacks it and picks the executable inside (progress shows as
+    "extracting <file>" / "mounting <file>"). No interaction needed to start.
+  - No candidate at all - "manual mode": nobody (human or, someday, an
+    OCR-driven "auto mode") can say which file to run. The session sits in
     AWAITING_INSTALLER and the response carries `manual_install_url` - this
     CLI prints it and stops; open it in a browser, finish the install there
     (the VNC session), then just re-run this same command to stream the
@@ -656,6 +656,7 @@ def poll_session(rom: RommClient, rom_id: int, proton_build: str | None,
     deadline = time.time() + timeout
     last_state = None
     announced_install_page = False
+    last_phase = None
     install_page_url = f"{rom.c.base}/rom/{rom_id}/install"
     while time.time() < deadline:
         session = rom.get_session(rom_id, session_id=session_id)
@@ -678,6 +679,11 @@ def poll_session(rom: RommClient, rom_id: int, proton_build: str | None,
             warn("re-run this CLI once it's running there to stream the result")
             return session
         if state in ACTIVE_STATES:
+            phase, phase_detail = session.get("phase"), session.get("phase_detail")
+            if phase and (phase, phase_detail) != last_phase:
+                verb = "Mounting" if phase == "mounting" else "Extracting"
+                log(f"  {verb} {phase_detail}")
+                last_phase = (phase, phase_detail)
             if bytes_total:
                 pct = bytes_written / bytes_total if bytes_total else 0.0
                 log(f"  {bar(pct)} {fmt_bytes(bytes_written)}/{fmt_bytes(bytes_total)}")
