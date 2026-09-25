@@ -124,6 +124,13 @@ class InstallSessionSchema(BaseModel):
     phase_detail: str | None = None
     proton_build: str | None = None
     expires_at: UTCDatetime | None = None
+    # Experimental auto mode (OCR clicks through the installer's dialogs).
+    # auto_status is "running" or "needs_manual" (auto mode found nothing it
+    # can press: the user should continue by hand through the VNC page);
+    # auto_detail is its last action. Both None while auto mode is off.
+    auto_mode: bool = False
+    auto_status: str | None = None
+    auto_detail: str | None = None
     vnc_url: str | None = None
     bytes_written: int
     bytes_total: int
@@ -132,8 +139,7 @@ class InstallSessionSchema(BaseModel):
     updated_at: UTCDatetime
     # Set only while state is AWAITING_INSTALLER: no client (any of them, not
     # just this one) could confidently auto-pick an installer, so a human has
-    # to - this is where. "Manual mode", as opposed to a not-yet-built "auto
-    # mode" (e.g. OCR-driven) that could someday click through it unattended.
+    # to - this is where. "Manual mode", as opposed to the OCR-driven auto mode.
     # Not a DB column - filled in by the endpoint, not from_attributes.
     manual_install_url: str | None = None
 

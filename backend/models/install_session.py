@@ -7,12 +7,14 @@ from typing import TYPE_CHECKING
 from sqlalchemy import (
     TIMESTAMP,
     BigInteger,
+    Boolean,
     Enum,
     ForeignKey,
     Index,
     Integer,
     String,
     Text,
+    false as sa_false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -114,6 +116,16 @@ class InstallSession(BaseModel):
     # InstallPhase) and the file it is doing it to. NULL otherwise.
     phase: Mapped[str | None] = mapped_column(String(32), default=None)
     phase_detail: Mapped[str | None] = mapped_column(String(1000), default=None)
+
+    # Experimental auto mode: OCR the installer and press its buttons. Read by
+    # the worker every tick, so it can be flipped while the installer runs.
+    auto_mode: Mapped[bool] = mapped_column(
+        Boolean(), default=False, server_default=sa_false(), nullable=False
+    )
+    # What auto mode is doing ("running" / "needs_manual", see
+    # handler.install.auto_mode.driver) and its last action. NULL when off.
+    auto_status: Mapped[str | None] = mapped_column(String(32), default=None)
+    auto_detail: Mapped[str | None] = mapped_column(String(1000), default=None)
 
     # noVNC URL for the running installer; only set while state == INSTALLING.
     vnc_url: Mapped[str | None] = mapped_column(String(500), default=None)

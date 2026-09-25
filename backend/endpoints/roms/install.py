@@ -121,6 +121,15 @@ class InstallStartForm(BaseModel):
     # Cache lifetime in seconds. ``None`` uses the configured default TTL,
     # a value <= 0 means unlimited (never auto-evict).
     ttl_seconds: int | None = None
+    # Experimental auto mode: OCR the installer and press its buttons. ``None``
+    # uses the configured default (off unless enabled in the settings).
+    auto_mode: bool | None = None
+
+
+class InstallAutoModeForm(BaseModel):
+    """Request body to switch auto mode on or off while a session runs."""
+
+    enabled: bool
 
 
 def _session_schema(rom_id: int, session: InstallSession) -> InstallSessionSchema:
@@ -281,8 +290,11 @@ async def start_install_session(
       after unpacking it (`source_path` records the archive). Only a ROM
       with no candidate at all sits in AWAITING_INSTALLER with
       `manual_install_url` set - "manual mode": a person has to pick a file
-      through the web Install page. There's no "auto mode" (e.g. OCR-driven,
-      clicking through the installer's own dialogs) yet.
+      through the web Install page.
+    - `auto_mode` (default from the settings, off unless enabled) makes the
+      worker OCR the installer and press its buttons (see
+      handler.install.auto_mode); it can be flipped later through
+      `PATCH /{id}/install/auto-mode`.
     - Otherwise (Windows with a resolved path, or any non-Windows ROM): the
       sandbox runner (or stream-copy) is enqueued immediately.
     """
@@ -325,6 +337,9 @@ async def start_install_session(
         else InstallSessionState.DETECTING
     )
     previous_state = existing.state if existing else None
+    auto_mode = (
+        data.auto_mode if data.auto_mode is not None else cm.get_config().INSTALL_AUTO_MODE
+    )
     if existing:
         session = db_install_session_handler.update_session(
             existing.id,
@@ -335,6 +350,9 @@ async def start_install_session(
                 "phase": None,
                 "phase_detail": None,
                 "proton_build": proton_build,
+                "auto_mode": auto_mode,
+                "auto_status": None,
+                "auto_detail": None,
                 "state": initial_state,
                 "error": None,
                 "vnc_url": None,
@@ -358,6 +376,7 @@ async def start_install_session(
                 installer_path=installer_path,
                 source_path=source_path,
                 proton_build=proton_build,
+                auto_mode=auto_mode,
                 expires_at=resolve_expires_at(data.ttl_seconds),
             )
         )
@@ -432,6 +451,39 @@ async def get_install_session(
     session = _resolve_session(rom.id, request.user.id, session_id)
     if not session:
         raise InstallSessionNotFoundException(id)
+    return _session_schema(rom.id, session)
+
+
+@protected_route(
+    router.patch,
+    "/{id}/install/auto-mode",
+    [Scope.ROMS_INSTALL],
+    responses={status.HTTP_404_NOT_FOUND: {}},
+)
+async def set_install_auto_mode(
+    request: Request,
+    id: Annotated[int, PathVar(description="Rom internal id.", ge=1)],
+    data: Annotated[InstallAutoModeForm, Body()],
+    session_id: int | None = None,
+) -> InstallSessionSchema:
+    """Switch the experimental auto mode on or off for a session.
+
+    The worker re-reads the flag every few seconds, so this also works while
+    the installer is running. Turning it off clears the status shown to the
+    user; turning it on resets a previous "needs manual" warning.
+    """
+    rom = db_rom_handler.get_rom(id)
+    if not rom:
+        raise RomNotFoundInDatabaseException(id)
+    assert_rom_visible(request, rom)
+
+    session = _resolve_session(rom.id, request.user.id, session_id)
+    if not session:
+        raise InstallSessionNotFoundException(id)
+    session = db_install_session_handler.update_session(
+        session.id,
+        {"auto_mode": data.enabled, "auto_status": None, "auto_detail": None},
+    )
     return _session_schema(rom.id, session)
 
 

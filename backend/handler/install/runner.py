@@ -32,6 +32,7 @@ from config import (
     INSTALL_TIMEOUT,
 )
 from handler.database import db_install_session_handler, db_rom_handler
+from handler.install.auto_mode.runtime import start_auto_mode
 from handler.filesystem import fs_rom_handler
 from handler.install.archive_prescan import (
     extract_and_rescan,
@@ -472,7 +473,11 @@ def run_install(install_session_id: int) -> None:
             live_manifest_thread.start()
         timed_out = False
         try:
-            _run_installer(argv, vnc.display)
+            _run_installer(
+                argv,
+                vnc.display,
+                auto_mode_session=(install_session_id, work_dir),
+            )
         except subprocess.TimeoutExpired:
             timed_out = True
         finally:
@@ -504,6 +509,8 @@ def run_install(install_session_id: int) -> None:
                 "state": InstallSessionState.STREAMING,
                 "vnc_url": None,
                 "vnc_web_port": None,
+                "auto_status": None,
+                "auto_detail": None,
             },
         )
         _finalize_install(
@@ -721,13 +728,20 @@ def _wrap_for_sandbox(
     return build_bwrap_command(spec, inner)
 
 
-def _run_installer(argv: list[str], display: str) -> None:
+def _run_installer(
+    argv: list[str],
+    display: str,
+    auto_mode_session: tuple[int, Path] | None = None,
+) -> None:
     """Run the installer argv with a hard timeout, keeping it usable meanwhile.
 
     The user drives the installer themselves through the VNC session - this
     just waits on the process, while a background thread keeps whatever
     dialog is currently showing actually focused (see
-    ``_focus_maintenance_loop`` for why that's needed at all).
+    ``_focus_maintenance_loop`` for why that's needed at all). With
+    ``auto_mode_session`` (session id, work dir) a second thread runs the
+    experimental auto mode, which only acts while the session's ``auto_mode``
+    flag is on (see handler.install.auto_mode).
     """
     proc = subprocess.Popen(argv)
     stop_focus_loop = threading.Event()
@@ -735,6 +749,11 @@ def _run_installer(argv: list[str], display: str) -> None:
         target=_focus_maintenance_loop, args=(display, stop_focus_loop), daemon=True
     )
     focus_thread.start()
+    auto_thread: threading.Thread | None = None
+    if auto_mode_session is not None:
+        auto_thread = start_auto_mode(
+            auto_mode_session[0], display, auto_mode_session[1], stop_focus_loop
+        )
     try:
         proc.wait(timeout=INSTALL_TIMEOUT)
     except subprocess.TimeoutExpired:
@@ -744,6 +763,8 @@ def _run_installer(argv: list[str], display: str) -> None:
     finally:
         stop_focus_loop.set()
         focus_thread.join(timeout=2)
+        if auto_thread is not None:
+            auto_thread.join(timeout=2)
 
 
 def _install_output_looks_finished(work_dir: Path) -> bool:
