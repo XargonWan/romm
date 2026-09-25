@@ -11,10 +11,13 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import configApi from "@/services/api/config";
 import installApi from "@/services/api/install";
+import type { ProtonBuildExtended } from "@/services/api/install";
 import storeAuth from "@/stores/auth";
 import type { Config } from "@/stores/config";
 import storeConfig from "@/stores/config";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
+import AddProtonBuildDialog from "./AddProtonBuildDialog.vue";
+import InstallCacheManager from "./InstallCacheManager.vue";
 import SettingsSection from "./SettingsSection.vue";
 import SettingsToggleRow from "./SettingsToggleRow.vue";
 
@@ -34,14 +37,13 @@ function configToKbPerSec(cfg: Config): number | null {
 const kbPerSec = ref<number | null>(configToKbPerSec(config.value));
 const savedSnapshot = ref(kbPerSec.value);
 
-const protonBuilds = ref<
-  Array<{
-    id: string;
-    label: string;
-    installed: boolean;
-    version?: string | null;
-  }>
->([]);
+const cacheTtlDays = ref<number | null>(
+  (config.value as Config).INSTALL_CACHE_TTL_DAYS ?? 0,
+);
+const savedCacheTtlDays = ref(cacheTtlDays.value);
+const addBuildOpen = ref(false);
+
+const protonBuilds = ref<ProtonBuildExtended[]>([]);
 const selectedProtonBuild = ref<string | null>(
   config.value.INSTALL_DEFAULT_PROTON_BUILD,
 );
@@ -57,6 +59,7 @@ const savedStreamUncompletedFiles = ref(streamUncompletedFiles.value);
 const dirty = computed(() => {
   if (kbPerSec.value !== savedSnapshot.value) return true;
   if (selectedProtonBuild.value !== savedProtonBuild.value) return true;
+  if (cacheTtlDays.value !== savedCacheTtlDays.value) return true;
   if (streamUncompletedFiles.value !== savedStreamUncompletedFiles.value)
     return true;
   return false;
@@ -80,6 +83,8 @@ async function loadConfig() {
     savedSnapshot.value = kbPerSec.value;
     selectedProtonBuild.value = cfg.INSTALL_DEFAULT_PROTON_BUILD ?? null;
     savedProtonBuild.value = selectedProtonBuild.value;
+    cacheTtlDays.value = (cfg as Config).INSTALL_CACHE_TTL_DAYS ?? 0;
+    savedCacheTtlDays.value = cacheTtlDays.value;
     streamUncompletedFiles.value = cfg.INSTALL_STREAM_UNCOMPLETED_FILES;
     savedStreamUncompletedFiles.value = streamUncompletedFiles.value;
   } catch {
@@ -110,6 +115,7 @@ onMounted(() => {
 function onReset() {
   kbPerSec.value = savedSnapshot.value;
   selectedProtonBuild.value = savedProtonBuild.value;
+  cacheTtlDays.value = savedCacheTtlDays.value;
   streamUncompletedFiles.value = savedStreamUncompletedFiles.value;
 }
 
@@ -124,9 +130,11 @@ async function onSave() {
       download_speed_limit_bytes_per_sec: bytesPerSec,
       default_proton_build: selectedProtonBuild.value,
       stream_uncompleted_files: streamUncompletedFiles.value,
+      cache_ttl_days: Math.max(0, Math.floor(Number(cacheTtlDays.value) || 0)),
     });
     savedSnapshot.value = kbPerSec.value;
     savedProtonBuild.value = selectedProtonBuild.value;
+    savedCacheTtlDays.value = cacheTtlDays.value;
     savedStreamUncompletedFiles.value = streamUncompletedFiles.value;
     await configStore.fetchConfig();
     snackbar.success(t("settings.stream-install-saved"));
@@ -206,6 +214,24 @@ onBeforeUnmount(() => {
 
 const allBuilds = computed(() => protonBuilds.value);
 
+async function removeCustomBuild(buildId: string) {
+  try {
+    await installApi.deleteCustomProtonBuild(buildId);
+    if (selectedProtonBuild.value === buildId) selectedProtonBuild.value = null;
+    await loadProtonBuilds();
+  } catch (err) {
+    const e = err as {
+      response?: { data?: { detail?: string } };
+      message?: string;
+    };
+    snackbar.error(
+      t("settings.stream-install-custom-remove-error", {
+        detail: e?.response?.data?.detail || e?.message || "",
+      }),
+    );
+  }
+}
+
 const downloadableBuilds = computed(() =>
   protonBuilds.value.filter((b) => !b.installed),
 );
@@ -217,104 +243,157 @@ const downloadableBuilds = computed(() =>
       :title="t('settings.stream-install-speed-limit')"
       icon="mdi-speedometer"
     >
-      <p class="r-v2-stream-install__desc">
-        {{ t("settings.stream-install-speed-limit-desc") }}
-      </p>
-      <RTextField
-        v-model="kbPerSec"
-        type="number"
-        min="0"
-        :disabled="!canEdit || loading"
-        :label="t('settings.stream-install-speed-limit-field')"
-        :placeholder="t('settings.stream-install-unlimited')"
-        :hint="t('settings.stream-install-unlimited-hint')"
-        class="r-v2-stream-install__field"
-      >
-        <template #append-inner>
-          <span class="r-v2-stream-install__unit">KB/s</span>
-        </template>
-      </RTextField>
+      <div class="r-v2-stream-install__body">
+        <p class="r-v2-stream-install__desc">
+          {{ t("settings.stream-install-speed-limit-desc") }}
+        </p>
+        <RTextField
+          v-model="kbPerSec"
+          type="number"
+          min="0"
+          :disabled="!canEdit || loading"
+          :label="t('settings.stream-install-speed-limit-field')"
+          :placeholder="t('settings.stream-install-unlimited')"
+          :hint="t('settings.stream-install-unlimited-hint')"
+          class="r-v2-stream-install__field"
+        >
+          <template #append-inner>
+            <span class="r-v2-stream-install__unit">KB/s</span>
+          </template>
+        </RTextField>
+      </div>
     </SettingsSection>
 
     <SettingsSection
       :title="t('settings.stream-install-proton-title')"
       icon="mdi-water-check"
     >
-      <p class="r-v2-stream-install__desc">
-        {{ t("settings.stream-install-proton-desc") }}
-      </p>
-
-      <RSelect
-        v-model="selectedProtonBuild"
-        :items="allBuilds"
-        :label="t('settings.stream-install-proton-field')"
-        :disabled="!canEdit || loading"
-        :loading="loadingBuilds"
-        item-title="label"
-        item-value="id"
-      />
-
-      <div
-        v-if="protonBuilds.length === 0 && !loadingBuilds"
-        class="r-v2-stream-install__no-builds"
-      >
+      <div class="r-v2-stream-install__body">
         <p class="r-v2-stream-install__desc">
-          {{ t("rom.install-proton-no-installs") }}
+          {{ t("settings.stream-install-proton-desc") }}
         </p>
-      </div>
 
-      <div class="r-v2-stream-install__builds-divider">
-        <RDivider inset />
-        <span class="r-v2-stream-install__builds-divider-text">
-          {{ t("rom.install-proton-available-downloads") }}
-        </span>
-        <RDivider inset />
-      </div>
-
-      <div
-        v-for="build in downloadableBuilds"
-        :key="build.id"
-        class="r-v2-stream-install__build-row"
-      >
-        <div class="r-v2-stream-install__build-info">
-          <span class="r-v2-stream-install__build-label">{{
-            build.label
-          }}</span>
-          <span class="r-v2-stream-install__build-badge">
-            {{ t("rom.install-proton-downloadable") }}
-          </span>
+        <div class="r-v2-stream-install__proton-pick">
+          <RSelect
+            v-model="selectedProtonBuild"
+            :items="allBuilds"
+            :label="t('settings.stream-install-proton-field')"
+            :disabled="!canEdit || loading"
+            :loading="loadingBuilds"
+            item-title="label"
+            item-value="id"
+          />
+          <RBtn
+            variant="outlined"
+            icon="mdi-plus"
+            :aria-label="t('settings.stream-install-custom-title')"
+            :title="t('settings.stream-install-custom-title')"
+            :disabled="!canEdit"
+            @click="addBuildOpen = true"
+          />
         </div>
+        <AddProtonBuildDialog
+          v-model="addBuildOpen"
+          @added="loadProtonBuilds"
+        />
 
         <div
-          v-if="downloadingBuilds[build.id] !== undefined"
-          class="r-v2-stream-install__build-progress"
+          v-if="protonBuilds.length === 0 && !loadingBuilds"
+          class="r-v2-stream-install__no-builds"
         >
-          <RProgressCircular
-            :value="downloadingBuilds[build.id]"
-            :indeterminate="downloadingBuilds[build.id] <= 0"
-            size="small"
-            color="primary"
-          />
-          <span class="r-v2-stream-install__build-progress-text">
-            {{ Math.round((downloadingBuilds[build.id] || 0) * 100) }}%
-          </span>
+          <p class="r-v2-stream-install__desc">
+            {{ t("rom.install-proton-no-installs") }}
+          </p>
         </div>
 
-        <RBtn
-          v-else
-          variant="flat"
-          color="primary"
-          size="small"
-          :loading="false"
-          :disabled="!canEdit || !canDownload"
-          @click="startDownload(build.id)"
-        >
-          {{ t("rom.install-proton-download-btn") }}
-        </RBtn>
-      </div>
+        <RDivider class="r-v2-stream-install__builds-divider">
+          {{ t("rom.install-proton-available-downloads") }}
+        </RDivider>
 
-      <div v-if="loadingBuilds" class="r-v2-stream-install__builds-loading">
-        <RProgressCircular indeterminate size="small" color="primary" />
+        <div
+          v-for="build in downloadableBuilds"
+          :key="build.id"
+          class="r-v2-stream-install__build-row"
+        >
+          <div class="r-v2-stream-install__build-info">
+            <span class="r-v2-stream-install__build-label">{{
+              build.label
+            }}</span>
+            <span class="r-v2-stream-install__build-badge">
+              {{ t("rom.install-proton-downloadable") }}
+            </span>
+          </div>
+          <RBtn
+            v-if="build.custom && downloadingBuilds[build.id] === undefined"
+            variant="text"
+            size="small"
+            color="error"
+            icon="mdi-delete-outline"
+            :aria-label="t('common.delete')"
+            :disabled="!canEdit"
+            @click="removeCustomBuild(build.id)"
+          />
+
+          <div
+            v-if="downloadingBuilds[build.id] !== undefined"
+            class="r-v2-stream-install__build-progress"
+          >
+            <RProgressCircular
+              :value="downloadingBuilds[build.id]"
+              :indeterminate="downloadingBuilds[build.id] <= 0"
+              size="small"
+              color="primary"
+            />
+            <span class="r-v2-stream-install__build-progress-text">
+              {{ Math.round((downloadingBuilds[build.id] || 0) * 100) }}%
+            </span>
+          </div>
+
+          <RBtn
+            v-else
+            variant="flat"
+            color="primary"
+            size="small"
+            :loading="false"
+            :disabled="!canEdit || !canDownload"
+            @click="startDownload(build.id)"
+          >
+            {{ t("rom.install-proton-download-btn") }}
+          </RBtn>
+        </div>
+
+        <div v-if="loadingBuilds" class="r-v2-stream-install__builds-loading">
+          <RProgressCircular indeterminate size="small" color="primary" />
+        </div>
+      </div>
+    </SettingsSection>
+
+    <SettingsSection
+      :title="t('settings.install-cache-title')"
+      icon="mdi-database-outline"
+    >
+      <div class="r-v2-stream-install__body">
+        <p class="r-v2-stream-install__desc">
+          {{ t("settings.install-cache-ttl-desc") }}
+        </p>
+        <RTextField
+          v-model.number="cacheTtlDays"
+          type="number"
+          min="0"
+          :disabled="!canEdit || loading"
+          :label="t('settings.install-cache-ttl-field')"
+          :hint="t('settings.install-cache-ttl-hint')"
+          persistent-hint
+          class="r-v2-stream-install__field"
+        >
+          <template #append-inner>
+            <span class="r-v2-stream-install__unit">
+              {{ t("settings.install-cache-ttl-unit") }}
+            </span>
+          </template>
+        </RTextField>
+        <RDivider class="r-v2-stream-install__cache-divider" />
+        <InstallCacheManager :can-edit="canEdit" />
       </div>
     </SettingsSection>
 
@@ -360,6 +439,9 @@ const downloadableBuilds = computed(() =>
   flex-direction: column;
   gap: 20px;
 }
+.r-v2-stream-install__body {
+  padding: 16px;
+}
 .r-v2-stream-install__desc {
   margin: 0 0 12px;
   font-size: 13px;
@@ -367,6 +449,18 @@ const downloadableBuilds = computed(() =>
 }
 .r-v2-stream-install__field {
   max-width: 280px;
+}
+.r-v2-stream-install__proton-pick {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.r-v2-stream-install__proton-pick > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.r-v2-stream-install__cache-divider {
+  margin: 16px 0;
 }
 .r-v2-stream-install__unit {
   font-size: 12px;
@@ -410,17 +504,11 @@ const downloadableBuilds = computed(() =>
   margin: 8px 0;
 }
 .r-v2-stream-install__builds-divider {
-  display: flex;
-  align-items: center;
-  gap: 12px;
   margin: 16px 0 8px;
-  color: var(--r-color-fg-secondary);
-  font-size: 13px;
+  font-size: 11px;
+  font-weight: var(--r-font-weight-bold);
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-.r-v2-stream-install__builds-divider-text {
-  white-space: nowrap;
 }
 .r-v2-stream-install__build-row {
   display: flex;
