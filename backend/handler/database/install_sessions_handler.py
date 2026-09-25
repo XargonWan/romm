@@ -176,6 +176,29 @@ class DBInstallSessionsHandler(DBBaseHandler):
         )
 
     @begin_session
+    def get_sessions_for_rom(
+        self,
+        rom_id: int,
+        session: Session = None,  # type: ignore
+    ) -> list[InstallSession]:
+        return list(
+            session.scalars(
+                select(InstallSession).where(InstallSession.rom_id == rom_id)
+            ).all()
+        )
+
+    @begin_session
+    def get_all_sessions(
+        self,
+        session: Session = None,  # type: ignore
+    ) -> list[InstallSession]:
+        return list(
+            session.scalars(
+                select(InstallSession).order_by(InstallSession.created_at.desc())
+            ).all()
+        )
+
+    @begin_session
     def get_expired_sessions(
         self,
         session: Session = None,  # type: ignore

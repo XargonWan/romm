@@ -2,7 +2,8 @@ import { defineStore } from "pinia";
 import type { ConfigResponse, EjsControlsButton } from "@/__generated__";
 import api from "@/services/api";
 
-export type Config = ConfigResponse;
+// INSTALL_CACHE_TTL_DAYS is newer than the generated ConfigResponse.
+export type Config = ConfigResponse & { INSTALL_CACHE_TTL_DAYS?: number };
 type ExclusionTypes =
   | "EXCLUDED_PLATFORMS"
   | "EXCLUDED_SINGLE_EXT"
@@ -48,6 +49,7 @@ const defaultConfig = {
   INSTALL_DOWNLOAD_SPEED_LIMIT_BYTES_PER_SEC: null,
   INSTALL_DEFAULT_PROTON_BUILD: null,
   INSTALL_STREAM_UNCOMPLETED_FILES: false,
+  INSTALL_CACHE_TTL_DAYS: 0,
 } as ConfigResponse;
 
 export default defineStore("config", {
