@@ -16,15 +16,18 @@ picked up on the next scan.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from config import INSTALL_DEFAULT_PROTON_BUILD, PROTON_INSTALL_ROOT
+from config.config_manager import config_manager as cm
 from handler.redis_handler import install_queue, redis_client
 from logger.formatter import highlight as hl
 from logger.logger import log
+from utils.ssrf import install_sync_ssrf_protection
 
 # --------------------------------------------------------------------------- #
 # Data model
@@ -49,6 +52,8 @@ class ProtonBuild:
     download_url: str | None = None
     # Approximate tarball size in bytes, only set for upstream builds.
     size_bytes: int | None = None
+    # Added by the user (Settings) rather than discovered upstream.
+    custom: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -162,53 +167,68 @@ def _discover_installed() -> list[ProtonBuild]:
 # Remote source discovery (downloadable builds)
 # --------------------------------------------------------------------------- #
 
-# (source_name, github_repo, asset_suffix, build_id)
-# build_id is the canonical ID the rest of the system uses. For GE-Proton we
-# use the tag name (e.g. "GE-Proton11-7") so users can pin a specific version;
-# for CachyOS we use "cachyos-latest" since we always fetch the latest release
-# and the ID stays stable as new releases appear.
-_SOURCES: tuple[tuple[str, str, str, str], ...] = (
-    ("GE-Proton", "GloriousEggroll/proton-ge-custom", "tar.gz", ""),
-    ("Proton-CachyOS", "CachyOS/proton-cachyos", "tar.xz", "cachyos-latest"),
+# Fixed-id upstream sources: (github_repo, asset_suffix, build_id, label).
+# The id stays stable as new releases appear ("always fetch the latest"), so
+# the extracted directory is reused until the user removes it.
+_LATEST_SOURCES: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "CachyOS/proton-cachyos",
+        "tar.xz",
+        "cachyos-latest",
+        "Proton-CachyOS Latest",
+    ),
 )
+_STATIC_LABELS = {build_id: label for _, _, build_id, label in _LATEST_SOURCES}
+
+# GE-Proton: the newest release of each major version >= _GE_MIN_MAJOR. The
+# id is the release tag (e.g. "GE-Proton11-7") so a pinned build stays valid.
+_GE_REPO = "GloriousEggroll/proton-ge-custom"
+_GE_TAG_RE = re.compile(r"^GE-Proton(\d+)-(\d+)$")
+_GE_MIN_MAJOR = 8
+# 100 releases per page; the oldest major we list sits a few pages back.
+_GE_MAX_PAGES = 6
+
+CUSTOM_ID_PREFIX = "custom-"
 
 
-def _fetch_github_releases(_source_name: str, repo: str, suffix: str, build_id: str = "") -> list[ProtonBuild]:
-    """Query the GitHub releases API for a Proton fork and return builds
-    that are downloadable but not yet installed.
+def custom_build_id(name: str) -> str:
+    """Stable directory-safe build id for a user-added build's display name."""
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name.strip()).strip("-").lower()
+    return f"{CUSTOM_ID_PREFIX}{slug}"
 
-    Runs synchronously — called from the API endpoint (fast, cached-ish) and
-    from the download task itself (which needs the exact asset URL).
-    """
+
+def _github_get(url: str, params: dict[str, object] | None = None):
     import httpx
 
-    url = f"https://api.github.com/repos/{repo}/releases/latest"
     try:
-        resp = httpx.get(url, timeout=30, headers={"Accept": "application/vnd.github+json"})
+        resp = httpx.get(
+            url,
+            params=params,
+            timeout=30,
+            headers={"Accept": "application/vnd.github+json"},
+        )
         resp.raise_for_status()
+        return resp.json()
     except (httpx.HTTPError, ValueError) as e:
-        log.debug(f"GitHub releases fetch failed for {repo}: {e}")
-        return []
+        log.debug(f"GitHub fetch failed for {url}: {e}")
+        return None
 
-    data = resp.json()
-    tag = data.get("tag_name", "")
+
+def _fetch_latest_source(
+    repo: str, suffix: str, build_id: str, label: str
+) -> list[ProtonBuild]:
+    """The newest release of a repo whose builds share one fixed id."""
+    data = _github_get(f"https://api.github.com/repos/{repo}/releases/latest")
+    tag = (data or {}).get("tag_name", "")
     if not tag:
         return []
-
-    # For sources with a stable build_id (e.g. "cachyos-latest"), use that.
-    # Otherwise (GE-Proton), use the tag name so users can pin versions.
-    resolved_build_id = build_id or tag
-
     for asset in data.get("assets", []):
         name = asset.get("name", "")
         if name.endswith(suffix) and "x86_64" in name:
-            # Avoid listing builds we already have on disk.
-            if _build_dir_exists(resolved_build_id):
-                continue
             return [
                 ProtonBuild(
-                    id=resolved_build_id,
-                    label=tag,
+                    id=build_id,
+                    label=label,
                     installed=False,
                     version=tag,
                     source="upstream",
@@ -219,9 +239,78 @@ def _fetch_github_releases(_source_name: str, repo: str, suffix: str, build_id: 
     return []
 
 
-def _build_dir_exists(build_id: str) -> bool:
-    """Whether a build with this id is already extracted under PROTON_INSTALL_ROOT."""
-    return (Path(PROTON_INSTALL_ROOT) / build_id).is_dir()
+def _fetch_ge_latest_per_major() -> list[ProtonBuild]:
+    """Newest GE-Proton release of every major version >= _GE_MIN_MAJOR."""
+    best: dict[int, tuple[int, dict]] = {}
+    for page in range(1, _GE_MAX_PAGES + 1):
+        releases = _github_get(
+            f"https://api.github.com/repos/{_GE_REPO}/releases",
+            {"per_page": 100, "page": page},
+        )
+        if not releases:
+            break
+        for release in releases:
+            match = _GE_TAG_RE.match(release.get("tag_name", ""))
+            if not match or release.get("prerelease") or release.get("draft"):
+                continue
+            major, minor = int(match.group(1)), int(match.group(2))
+            if major >= _GE_MIN_MAJOR and (
+                major not in best or minor > best[major][0]
+            ):
+                best[major] = (minor, release)
+        if best and min(best) <= _GE_MIN_MAJOR:
+            break
+
+    builds: list[ProtonBuild] = []
+    for major in sorted(best, reverse=True):
+        release = best[major][1]
+        asset = next(
+            (
+                a
+                for a in release.get("assets", [])
+                if a.get("name", "").endswith(".tar.gz")
+            ),
+            None,
+        )
+        if asset is None:
+            continue
+        tag = release["tag_name"]
+        builds.append(
+            ProtonBuild(
+                id=tag,
+                label=f"GE-Proton{major} (latest)",
+                installed=False,
+                version=tag,
+                source="upstream",
+                download_url=asset.get("browser_download_url"),
+                size_bytes=asset.get("size"),
+            )
+        )
+    return builds
+
+
+def get_custom_builds() -> list[dict[str, str]]:
+    """User-added builds ({"name", "url"}), read fresh from config.yml so the
+    worker container sees additions made through the API."""
+    try:
+        return list(cm.get_config().INSTALL_CUSTOM_PROTON_BUILDS)
+    except Exception as e:  # noqa: BLE001 - a broken config must not hide upstream builds
+        log.debug(f"Could not read custom Proton builds: {e}")
+        return []
+
+
+def _custom_builds() -> list[ProtonBuild]:
+    return [
+        ProtonBuild(
+            id=custom_build_id(entry["name"]),
+            label=entry["name"],
+            installed=False,
+            source="upstream",
+            download_url=entry["url"],
+            custom=True,
+        )
+        for entry in get_custom_builds()
+    ]
 
 
 def _is_proton_build_complete(build_dir: Path) -> bool:
@@ -239,12 +328,19 @@ def _is_proton_build_complete(build_dir: Path) -> bool:
     )
 
 
-def _fetch_downloadable() -> list[ProtonBuild]:
-    """Query all upstream sources for builds not yet installed."""
+def _fetch_upstream() -> list[ProtonBuild]:
     builds: list[ProtonBuild] = []
-    for source_name, repo, suffix, build_id in _SOURCES:
-        builds.extend(_fetch_github_releases(source_name, repo, suffix, build_id))
+    for repo, suffix, build_id, label in _LATEST_SOURCES:
+        builds.extend(_fetch_latest_source(repo, suffix, build_id, label))
+    builds.extend(_fetch_ge_latest_per_major())
     return builds
+
+
+def _cached_downloadable() -> list[ProtonBuild]:
+    """Every build offered for download: upstream ones (cached, the GitHub
+    calls are rate limited) plus user-added ones (always fresh).
+    Includes builds already on disk (callers filter by installed state)."""
+    return [*_cached_upstream(), *_custom_builds()]
 
 
 # --------------------------------------------------------------------------- #
@@ -311,7 +407,7 @@ def _download_proton_build(build_id: str) -> None:
     import httpx
 
     # Find the download URL by re-querying upstream.
-    all_downloadable = _fetch_downloadable()
+    all_downloadable = _cached_downloadable()
     match = next((b for b in all_downloadable if b.id == build_id), None)
     if match is None or not match.download_url:
         log.error(f"Cannot download Proton build {build_id}: no matching release found")
@@ -346,7 +442,9 @@ def _download_proton_build(build_id: str) -> None:
     total = match.size_bytes or 0
     downloaded = 0
     try:
-        with httpx.stream("GET", str(match.download_url), timeout=600, follow_redirects=True) as resp:
+        client = httpx.Client(timeout=600, follow_redirects=True)
+        install_sync_ssrf_protection(client)
+        with client, client.stream("GET", str(match.download_url)) as resp:
             resp.raise_for_status()
             with tmp_file.open("wb") as f:
                 for chunk in resp.iter_bytes(chunk_size=256 * 1024):
@@ -490,7 +588,7 @@ def remove_build(build_id: str) -> None:
 
 # Cache downloads list for this many seconds to avoid hammering the GitHub API
 # on every /proton-builds request.
-_DOWNLOADABLE_CACHE_TTL = 300
+_DOWNLOADABLE_CACHE_TTL = 3600
 _DOWNLOADABLE_CACHE: tuple[float, list[ProtonBuild]] | None = None
 
 
@@ -505,29 +603,39 @@ class _ProtonBuildManager:
         installed = _discover_installed()
         installed_ids = {b.id for b in installed}
         downloadable = _cached_downloadable()
-        # For builds that are both installed AND available upstream (same id),
-        # merge the upstream version/label into the installed entry so the
-        # frontend can show e.g. "cachyos-11.0-20260703-slr (installed)" rather
-        # than just "cachyos-latest". Downloadable-only builds are appended as-is.
+        # For builds that are both installed AND known upstream (same id),
+        # merge the upstream label/version into the installed entry so the
+        # frontend shows e.g. "Proton-CachyOS Latest" rather than the bare
+        # directory name. Downloadable-only builds are appended as-is.
         downloadable_by_id = {b.id: b for b in downloadable}
         merged: list[ProtonBuild] = []
         for build in installed:
             upstream = downloadable_by_id.get(build.id)
-            if upstream and not build.version:
+            if upstream:
                 merged.append(
                     ProtonBuild(
                         id=build.id,
-                        label=build.label,
+                        label=upstream.label,
                         installed=True,
                         version=upstream.version,
                         path=build.path,
                         source="runtime",
                         download_url=upstream.download_url,
                         size_bytes=upstream.size_bytes,
+                        custom=upstream.custom,
                     )
                 )
             else:
-                merged.append(build)
+                merged.append(
+                    ProtonBuild(
+                        id=build.id,
+                        label=_STATIC_LABELS.get(build.id, build.label),
+                        installed=True,
+                        version=build.version,
+                        path=build.path,
+                        source=build.source,
+                    )
+                )
         # Append downloadable-only builds (id not in installed set).
         merged.extend(b for b in downloadable if b.id not in installed_ids)
         return tuple(merged)
@@ -541,8 +649,8 @@ class _ProtonBuildManager:
         return None
 
 
-def _cached_downloadable() -> list[ProtonBuild]:
-    """Fetch downloadable builds, cached for _DOWNLOADABLE_CACHE_TTL seconds."""
+def _cached_upstream() -> list[ProtonBuild]:
+    """Upstream builds, cached for _DOWNLOADABLE_CACHE_TTL seconds."""
     import time
 
     global _DOWNLOADABLE_CACHE
@@ -551,6 +659,8 @@ def _cached_downloadable() -> list[ProtonBuild]:
         ts, cached = _DOWNLOADABLE_CACHE
         if now - ts < _DOWNLOADABLE_CACHE_TTL:
             return cached
-    cached = _fetch_downloadable()
-    _DOWNLOADABLE_CACHE = (now, cached)
+    cached = _fetch_upstream()
+    # An empty result is usually a rate limit or outage; retry sooner.
+    if cached:
+        _DOWNLOADABLE_CACHE = (now, cached)
     return cached
