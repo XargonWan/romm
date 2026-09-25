@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 import pytest
 
 import utils.install_cache as install_cache
-from config import INSTALL_CACHE_DEFAULT_TTL
 from utils.install_cache import (
     UNLIMITED_TTL,
     cache_size_bytes,
@@ -22,12 +21,12 @@ def cache_root(tmp_path, monkeypatch):
 
 
 class TestResolveExpiresAt:
-    def test_none_uses_default_ttl(self):
-        before = datetime.now(timezone.utc)
-        expires = resolve_expires_at(None)
-        assert expires is not None
-        delta = (expires - before).total_seconds()
-        assert INSTALL_CACHE_DEFAULT_TTL - 5 <= delta <= INSTALL_CACHE_DEFAULT_TTL + 5
+    def test_none_is_unlimited_by_default(self, monkeypatch):
+        monkeypatch.setattr(
+            install_cache.cm, "get_config", lambda: install_cache.cm.config
+        )
+        monkeypatch.setattr(install_cache.cm.config, "INSTALL_CACHE_TTL_DAYS", 0)
+        assert resolve_expires_at(None) is None
 
     def test_unlimited_returns_none(self):
         assert resolve_expires_at(UNLIMITED_TTL) is None
@@ -75,3 +74,66 @@ class TestCacheSizeBytes:
         nested.mkdir()
         (nested / "b.bin").write_bytes(b"y" * 50)
         assert cache_size_bytes(2) == 150
+
+
+class TestDirSizeBytes:
+    def test_hardlinked_files_count_once(self, cache_root):
+        path = ensure_session_cache_dir(3)
+        original = path / "prefix" / "game.dll"
+        original.parent.mkdir()
+        original.write_bytes(b"x" * 100)
+        (path / "game.dll").hardlink_to(original)
+        assert install_cache.dir_size_bytes(path) == 100
+
+    def test_cache_root_dirs_lists_session_directories(self, cache_root):
+        ensure_session_cache_dir(4)
+        ensure_session_cache_dir(5)
+        assert [p.name for p in install_cache.cache_root_dirs()] == ["4", "5"]
+
+
+class TestConfiguredTtl:
+    def test_zero_days_is_unlimited(self, monkeypatch):
+        monkeypatch.setattr(install_cache.cm.config, "INSTALL_CACHE_TTL_DAYS", 0)
+        monkeypatch.setattr(install_cache.cm, "get_config", lambda: install_cache.cm.config)
+        assert resolve_expires_at(None) is None
+
+    def test_days_setting_drives_the_default(self, monkeypatch):
+        monkeypatch.setattr(install_cache.cm.config, "INSTALL_CACHE_TTL_DAYS", 3)
+        monkeypatch.setattr(install_cache.cm, "get_config", lambda: install_cache.cm.config)
+        before = datetime.now(timezone.utc)
+        expires = resolve_expires_at(None)
+        assert expires is not None
+        assert 3 * 86400 - 5 <= (expires - before).total_seconds() <= 3 * 86400 + 5
+
+
+class TestPurgeSuperseded:
+    def test_removes_finished_older_sessions_but_not_active_or_kept(
+        self, cache_root, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        from models.install_session import InstallSessionState as S
+
+        rows = {
+            1: S.DONE,
+            2: S.FAILED,
+            3: S.INSTALLING,
+            4: S.DONE,
+        }
+        deleted = []
+        fake = SimpleNamespace(
+            get_sessions_for_rom=lambda rom_id: [
+                SimpleNamespace(id=i, state=st) for i, st in rows.items()
+            ],
+            delete_session=deleted.append,
+        )
+        import handler.database as db
+
+        monkeypatch.setattr(db, "db_install_session_handler", fake)
+        for i in rows:
+            ensure_session_cache_dir(i)
+        removed = install_cache.purge_superseded_sessions(10, keep_session_id=4)
+        assert removed == 2
+        assert sorted(deleted) == [1, 2]
+        assert not session_cache_dir(1).exists()
+        assert session_cache_dir(3).exists() and session_cache_dir(4).exists()

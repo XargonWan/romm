@@ -7,7 +7,8 @@ from handler.filesystem.installer_detection import (
     RANK_TOP_LEVEL_EXECUTABLE,
     DetectedFile,
     detect_installer_candidates,
-    pick_confident_installer,
+    ARCHIVE_SOURCE_KINDS,
+    pick_default_installer,
 )
 
 
@@ -108,30 +109,34 @@ class TestDetectInstallerCandidates:
         assert ranks["Disc.ISO"] == RANK_DISC_IMAGE
 
 
-class TestPickConfidentInstaller:
+class TestPickDefaultInstaller:
     def test_no_candidates_returns_none(self):
-        assert pick_confident_installer([]) is None
+        assert pick_default_installer([]) is None
 
     def test_top_ranked_known_installer_is_picked(self):
         candidates = detect_installer_candidates(
             [DetectedFile("setup.exe", 100), DetectedFile("readme.txt", 1)]
         )
-        picked = pick_confident_installer(candidates)
+        picked = pick_default_installer(candidates)
         assert picked is not None
         assert picked.path == "setup.exe"
 
-    def test_top_ranked_plain_executable_is_not_confident(self):
-        # Only a well-known name (gog-*.exe, setup*.exe, ...) is confident
-        # enough to auto-start without asking - a generic top-level .exe
-        # (e.g. "Game Title.exe") isn't, even as the sole candidate.
+    def test_plain_executable_is_picked_too(self):
         candidates = detect_installer_candidates([DetectedFile("Game Title.exe", 100)])
-        assert pick_confident_installer(candidates) is None
+        picked = pick_default_installer(candidates)
+        assert picked is not None
+        assert picked.path == "Game Title.exe"
 
-    def test_multiple_same_rank_candidates_are_not_ambiguous(self):
-        # Several known-installer names tie for rank 0 - detect_installer_candidates
-        # already breaks the tie deterministically (biggest first), so the
-        # top entry is picked exactly like a human clicking the first,
-        # largest option would - not treated as needing a manual choice.
+    def test_archive_or_disc_image_is_picked_when_nothing_runs_directly(self):
+        candidates = detect_installer_candidates(
+            [DetectedFile("game.zip", 100), DetectedFile("disc.iso", 50)]
+        )
+        picked = pick_default_installer(candidates)
+        assert picked is not None
+        assert picked.path == "disc.iso"
+        assert picked.kind in ARCHIVE_SOURCE_KINDS
+
+    def test_ties_break_biggest_first(self):
         candidates = detect_installer_candidates(
             [
                 DetectedFile("setup_v1.exe", 100),
@@ -139,6 +144,6 @@ class TestPickConfidentInstaller:
                 DetectedFile("gog-installer.exe", 50),
             ]
         )
-        picked = pick_confident_installer(candidates)
+        picked = pick_default_installer(candidates)
         assert picked is not None
         assert picked.path == "setup_v2.exe"

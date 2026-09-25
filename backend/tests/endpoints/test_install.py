@@ -136,10 +136,10 @@ class TestStartInstallSession:
         self, client: TestClient, access_token: str, win_rom: Rom
     ):
         # No worker mocked: this returns before that check even runs (nothing
-        # to enqueue yet). win_rom has no real files on disk, so auto-pick
-        # (pick_confident_installer) finds nothing confident either - a
-        # human has to choose, hence AWAITING_INSTALLER with a URL to send
-        # them to (see manual_install_url's own docstring).
+        # to enqueue yet). win_rom has no real files on disk, so there is no
+        # candidate to pick by default - a human has to choose, hence
+        # AWAITING_INSTALLER with a URL to send them to (see
+        # manual_install_url's own docstring).
         r = client.post(
             f"/api/roms/{win_rom.id}/install", json={}, headers=_auth(access_token)
         )
@@ -151,9 +151,9 @@ class TestStartInstallSession:
     def test_windows_rom_auto_picks_a_confident_installer(
         self, client: TestClient, access_token: str, win_rom: Rom
     ):
-        # The server resolves the installer itself - same threshold the web
-        # UI used to apply client-side (see pick_confident_installer) - so no
-        # client has to fetch candidates and pick one just to start.
+        # The server resolves the installer itself (the top candidate, as the
+        # Install page pre-selects it), so no client has to fetch candidates
+        # and pick one just to start.
         candidate = InstallerCandidate(
             path="setup.exe",
             file_name="setup.exe",
@@ -179,6 +179,33 @@ class TestStartInstallSession:
         assert body["state"] == InstallSessionState.INSTALLING.value
         assert body["installer_path"] == "setup.exe"
         mock_enqueue.assert_called_once()
+
+    def test_windows_rom_defaults_to_an_archive_as_the_source(
+        self, client: TestClient, access_token: str, win_rom: Rom
+    ):
+        candidate = InstallerCandidate(
+            path="MyGame.zip",
+            file_name="MyGame.zip",
+            file_size_bytes=123,
+            rank=4,
+            kind="archive",
+        )
+        with (
+            patch(
+                "endpoints.roms.install.fs_rom_handler.get_installer_candidates",
+                return_value=[candidate],
+            ),
+            patch("endpoints.roms.install.has_install_worker", return_value=True),
+            patch("endpoints.roms.install.enqueue_install", return_value="job-1"),
+        ):
+            r = client.post(
+                f"/api/roms/{win_rom.id}/install", json={}, headers=_auth(access_token)
+            )
+        assert r.status_code == status.HTTP_200_OK
+        body = r.json()
+        assert body["state"] == InstallSessionState.INSTALLING.value
+        assert body["source_path"] == "MyGame.zip"
+        assert body["installer_path"] is None
 
     def test_already_done_session_does_not_block_a_fresh_install(
         self, client: TestClient, access_token: str, win_rom: Rom, admin_user: User
@@ -566,6 +593,123 @@ class TestProtonBuilds:
         builds = r.json()["builds"]
         assert len(builds) > 0
         assert sum(1 for b in builds if b["installed"]) == 1
+
+
+class TestInstallCacheManager:
+    def _session(self, win_rom, admin_user, state, root):
+        session = db_install_session_handler.add_session(
+            InstallSession(
+                rom_id=win_rom.id,
+                user_id=admin_user.id,
+                state=state,
+                installer_path="setup.exe",
+            )
+        )
+        cache_dir = root / str(session.id)
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "game.bin").write_bytes(b"x" * 100)
+        return session
+
+    def test_lists_caches_with_total(
+        self, client, access_token, win_rom, admin_user, install_cache_root
+    ):
+        session = self._session(
+            win_rom, admin_user, InstallSessionState.DONE, install_cache_root
+        )
+        r = client.get("/api/roms/install/cache", headers=_auth(access_token))
+        assert r.status_code == status.HTTP_200_OK
+        body = r.json()
+        assert body["total_bytes"] == 100
+        assert [(e["session_id"], e["size_bytes"]) for e in body["entries"]] == [
+            (session.id, 100)
+        ]
+
+    def test_delete_one_removes_files_and_session(
+        self, client, access_token, win_rom, admin_user, install_cache_root
+    ):
+        session = self._session(
+            win_rom, admin_user, InstallSessionState.DONE, install_cache_root
+        )
+        r = client.delete(
+            f"/api/roms/install/cache/{session.id}", headers=_auth(access_token)
+        )
+        assert r.status_code == status.HTTP_200_OK
+        assert r.json()["freed_bytes"] == 100
+        assert not (install_cache_root / str(session.id)).exists()
+        assert db_install_session_handler.get_session(session.id) is None
+
+    def test_delete_one_refuses_a_running_install(
+        self, client, access_token, win_rom, admin_user, install_cache_root
+    ):
+        session = self._session(
+            win_rom, admin_user, InstallSessionState.INSTALLING, install_cache_root
+        )
+        r = client.delete(
+            f"/api/roms/install/cache/{session.id}", headers=_auth(access_token)
+        )
+        assert r.status_code == status.HTTP_409_CONFLICT
+        assert (install_cache_root / str(session.id)).exists()
+
+    def test_delete_all_skips_running_installs(
+        self, client, access_token, win_rom, admin_user, install_cache_root
+    ):
+        done = self._session(
+            win_rom, admin_user, InstallSessionState.DONE, install_cache_root
+        )
+        running = self._session(
+            win_rom, admin_user, InstallSessionState.INSTALLING, install_cache_root
+        )
+        r = client.delete("/api/roms/install/cache", headers=_auth(access_token))
+        assert r.status_code == status.HTTP_200_OK
+        assert r.json() == {"removed": 1, "freed_bytes": 100, "skipped": 1}
+        assert not (install_cache_root / str(done.id)).exists()
+        assert (install_cache_root / str(running.id)).exists()
+
+
+class TestCustomProtonBuilds:
+    def test_add_lists_and_remove(self, client, access_token):
+        saved: list[list[dict[str, str]]] = []
+        current: list[dict[str, str]] = []
+
+        def fake_update(**kwargs):
+            current[:] = kwargs["custom_proton_builds"]
+            saved.append(list(current))
+
+        with (
+            patch.object(install_module.cm, "update_install_settings", fake_update),
+            patch.object(install_module, "get_custom_builds", lambda: list(current)),
+            patch.object(install_module, "remove_build", lambda _id: None),
+        ):
+            r = client.post(
+                "/api/roms/install/proton-builds/custom",
+                json={"name": "My Proton", "url": "https://example.com/p.tar.gz"},
+                headers=_auth(access_token),
+            )
+            assert r.status_code == status.HTTP_200_OK
+            assert r.json()["id"] == "custom-my-proton"
+            assert r.json()["custom"] is True
+
+            dup = client.post(
+                "/api/roms/install/proton-builds/custom",
+                json={"name": "my proton", "url": "https://example.com/q.tar.gz"},
+                headers=_auth(access_token),
+            )
+            assert dup.status_code == status.HTTP_409_CONFLICT
+
+            gone = client.delete(
+                "/api/roms/install/proton-builds/custom/custom-my-proton",
+                headers=_auth(access_token),
+            )
+            assert gone.status_code == status.HTTP_200_OK
+        assert saved[-1] == []
+
+    def test_rejects_a_non_http_url(self, client, access_token):
+        r = client.post(
+            "/api/roms/install/proton-builds/custom",
+            json={"name": "Bad", "url": "file:///etc/passwd"},
+            headers=_auth(access_token),
+        )
+        assert r.status_code == status.HTTP_400_BAD_REQUEST
 
 
 class TestAssertOwnsVncPort:

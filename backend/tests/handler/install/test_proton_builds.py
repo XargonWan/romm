@@ -169,3 +169,68 @@ class TestResolveEffectiveBuild:
         monkeypatch.setattr(proton_builds, "INSTALL_DEFAULT_PROTON_BUILD", "cachyos-latest")
         monkeypatch.setattr(proton_builds, "_discover_installed", lambda: [])
         assert proton_builds.resolve_effective_build(None) == "cachyos-latest"
+
+
+class TestCustomBuilds:
+    def test_custom_build_id_is_a_directory_safe_slug(self):
+        assert proton_builds.custom_build_id(" My Proton (beta)! ") == "custom-my-proton-beta"
+
+    def test_custom_builds_are_listed_as_downloadable(self, monkeypatch):
+        monkeypatch.setattr(proton_builds, "_discover_installed", lambda: [])
+        monkeypatch.setattr(proton_builds, "_cached_upstream", lambda: [])
+        monkeypatch.setattr(
+            proton_builds,
+            "get_custom_builds",
+            lambda: [{"name": "My Proton", "url": "https://example.com/p.tar.gz"}],
+        )
+        builds = proton_builds.list_proton_builds()
+        assert [(b.id, b.label, b.installed, b.custom) for b in builds] == [
+            ("custom-my-proton", "My Proton", False, True)
+        ]
+
+    def test_installed_custom_build_takes_its_display_name(self, monkeypatch):
+        monkeypatch.setattr(
+            proton_builds,
+            "_discover_installed",
+            lambda: [
+                ProtonBuild(id="custom-my-proton", label="custom-my-proton", installed=True)
+            ],
+        )
+        monkeypatch.setattr(proton_builds, "_cached_upstream", lambda: [])
+        monkeypatch.setattr(
+            proton_builds,
+            "get_custom_builds",
+            lambda: [{"name": "My Proton", "url": "https://example.com/p.tar.gz"}],
+        )
+        (build,) = proton_builds.list_proton_builds()
+        assert build.installed and build.label == "My Proton"
+
+
+class TestGeLatestPerMajor:
+    def test_picks_the_newest_release_of_each_major(self, monkeypatch):
+        def release(tag):
+            return {
+                "tag_name": tag,
+                "assets": [
+                    {
+                        "name": f"{tag}.tar.gz",
+                        "browser_download_url": f"https://example.com/{tag}.tar.gz",
+                        "size": 1,
+                    }
+                ],
+            }
+
+        pages = {
+            1: [release("GE-Proton11-7"), release("GE-Proton10-34"), release("GE-Proton10-9")],
+            2: [release("GE-Proton9-27"), release("GE-Proton8-32"), release("GE-Proton7-55")],
+        }
+        monkeypatch.setattr(
+            proton_builds, "_github_get", lambda url, params=None: pages.get(params["page"])
+        )
+        builds = proton_builds._fetch_ge_latest_per_major()
+        assert [(b.id, b.label) for b in builds] == [
+            ("GE-Proton11-7", "GE-Proton11 (latest)"),
+            ("GE-Proton10-34", "GE-Proton10 (latest)"),
+            ("GE-Proton9-27", "GE-Proton9 (latest)"),
+            ("GE-Proton8-32", "GE-Proton8 (latest)"),
+        ]
