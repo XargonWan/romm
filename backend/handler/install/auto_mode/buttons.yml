@@ -1,0 +1,113 @@
+# Buttons the install auto mode knows how to press. To support another
+# installer or language, append an entry: the engine picks it up as is.
+#
+# category: next | agree | install | finish | key | deny
+#   deny entries are never pressed; a line containing one is ignored.
+# labels:   OCR text to look for (case, spaces, "&", ">" and "(N)" are ignored).
+# mnemonic: Alt+<letter> tried when clicking the label changes nothing.
+# key:      (key only) xdotool key name pressed when the text is on screen.
+# late:     only used once the install has written files (e.g. "Exit").
+# toggle:   (agree only) a radio/checkbox to select before pressing Next,
+#           only used on license pages. Otherwise the entry is a button.
+
+context_keywords:
+  license:
+    [
+      "license",
+      "licence",
+      "agreement",
+      "eula",
+      "terms",
+      "licenza",
+      "accordo",
+      "termini",
+      "lizenz",
+      "licencia",
+      "contrato",
+      "ライセンス",
+      "使用許諾",
+      "许可",
+      "協議",
+      "协议",
+    ]
+
+buttons:
+  - category: next
+    mnemonic: n
+    labels: ["Next", "Next >", "OK", "Continue", "Proceed", "Weiter", "Suivant", "Siguiente", "次へ", "下一步"]
+  - category: next
+    mnemonic: a
+    labels: ["Avanti", "Avanti >", "Procedi", "Continua"]
+  - category: agree
+    mnemonic: a
+    labels: ["Agree", "I Agree", "Accept", "Accetta", "Accetto", "Ich stimme zu", "J'accepte", "Acepto", "同意", "同意する", "我同意"]
+  - category: agree
+    mnemonic: y
+    labels: ["Yes", "Si", "Sì", "Ja", "Oui", "はい", "是"]
+  - category: agree
+    toggle: true
+    labels:
+      - "Yes, I have read and accept EULA"
+      - "I accept the agreement"
+      - "I accept the terms of the license agreement"
+      - "I accept the license terms"
+      - "I have read and accept the license terms"
+      - "I agree to the terms"
+      - "Accetto i termini del contratto di licenza"
+      - "Accetto il contratto di licenza"
+      - "Ho letto e accettato i termini di licenza"
+      - "Ich akzeptiere die Bedingungen"
+      - "J'accepte les termes du contrat de licence"
+      - "Acepto los terminos del contrato de licencia"
+      - "同意する"
+      - "我接受协议"
+      - "我接受许可协议中的条款"
+  - category: install
+    mnemonic: i
+    labels: ["Install", "Installa", "Installieren", "Installer", "Instalar", "インストール", "安装", "安裝"]
+  - category: finish
+    mnemonic: f
+    labels: ["Finish", "Fine", "Fertig", "Terminer", "Finalizar", "完了", "完成"]
+  # Exit ends many GOG installers, but on a start screen it would abort the
+  # install, so it is only pressed once files have been written.
+  - category: finish
+    late: true
+    mnemonic: x
+    labels: ["Exit", "Esci", "Beenden", "Quitter", "Salir", "終了", "退出"]
+  # Text asking for a keyboard key instead of a click.
+  - category: key
+    key: "Up"
+    labels:
+      - "Press up to unlock the screen"
+      - "Press up to unlock"
+      - "Premi su per sbloccare lo schermo"
+  - category: key
+    key: "Return"
+    labels:
+      - "Press Enter to continue"
+      - "Press Enter to start"
+      - "Premi Invio per continuare"
+  - category: key
+    key: "space"
+    labels:
+      - "Press any key to continue"
+      - "Press space to continue"
+      - "Premi un tasto per continuare"
+  - category: deny
+    labels:
+      - "Cancel"
+      - "Annulla"
+      - "Abbrechen"
+      - "Annuler"
+      - "Cancelar"
+      - "Back"
+      - "Indietro"
+      - "Browse"
+      - "Sfoglia"
+      - "Skip"
+      - "I do not accept"
+      - "I do not agree"
+      - "Non accetto"
+      - "Decline"
+      - "キャンセル"
+      - "取消"
