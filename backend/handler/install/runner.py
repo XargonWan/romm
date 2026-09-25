@@ -33,7 +33,11 @@ from config import (
 )
 from handler.database import db_install_session_handler, db_rom_handler
 from handler.filesystem import fs_rom_handler
-from handler.install.archive_prescan import extract_and_rescan, is_archive_candidate
+from handler.install.archive_prescan import (
+    extract_and_rescan,
+    is_archive_candidate,
+    source_phase,
+)
 from handler.install.manifest import (
     LiveManifestEntry,
     delete_live_manifest,
@@ -55,7 +59,9 @@ from handler.install.streaming_mode import stream_uncompleted_files_enabled
 from handler.install.vnc import VncSession, start_vnc_session
 from handler.install.windows_output import (
     collect_windows_install_files,
+    load_baseline,
     resolve_install_root,
+    save_baseline,
     snapshot_windows_content_files,
 )
 from handler.redis_handler import install_queue
@@ -295,36 +301,64 @@ def run_install(install_session_id: int) -> None:
         _fail(install_session_id, "Game no longer exists")
         return
 
-    if not session.installer_path:
+    if not session.installer_path and not session.source_path:
         _fail(install_session_id, "No installer selected for this session")
         return
 
+    # An archive/disc image holding the installer: either picked explicitly
+    # (`source_path`, with `installer_path` naming the executable inside it) or
+    # an archive selected as the installer itself (legacy sessions). Extracted
+    # into a scratch dir, never the install cache, since it holds a copy of
+    # the ROM's own contents rather than the install's output.
+    source_rel = session.source_path
+    inner_installer = session.installer_path
+    if source_rel is None and inner_installer:
+        try:
+            probe = fs_rom_handler.resolve_installer_abs_path(rom, inner_installer)
+        except (ValueError, FileNotFoundError) as e:
+            _fail(install_session_id, str(e))
+            return
+        if is_archive_candidate(Path(probe)):
+            source_rel, inner_installer = inner_installer, None
+
+    extract_temp_dir: TemporaryDirectory[str] | None = None
     try:
-        installer_abs = fs_rom_handler.resolve_installer_abs_path(
-            rom, session.installer_path
-        )
+        if source_rel is None:
+            installer_abs = fs_rom_handler.resolve_installer_abs_path(
+                rom, inner_installer or ""
+            )
+        else:
+            source_abs = Path(
+                fs_rom_handler.resolve_installer_abs_path(rom, source_rel)
+            )
+            db_install_session_handler.update_session(
+                install_session_id,
+                {
+                    "phase": source_phase(source_abs).value,
+                    "phase_detail": source_abs.name,
+                },
+            )
+            result = extract_and_rescan(source_abs, inner_installer)
+            if result is None:
+                _fail(
+                    install_session_id,
+                    f"Nothing recognizable as an installer inside {source_abs.name}",
+                )
+                return
+            extract_temp_dir, extract_root, chosen = result
+            installer_abs = str(extract_root / chosen.path)
+            db_install_session_handler.update_session(
+                install_session_id,
+                {
+                    "source_path": source_rel,
+                    "installer_path": chosen.path,
+                    "phase": None,
+                    "phase_detail": None,
+                },
+            )
     except (ValueError, FileNotFoundError) as e:
         _fail(install_session_id, str(e))
         return
-
-    # The picked "installer" is itself an archive/disc image (a
-    # distributor .zip, a game ISO, ...) rather than something directly
-    # runnable - extract it into a scratch dir (never the install cache -
-    # this holds a copy of the ROM's own archive contents, not the
-    # install's own output) and search inside it exactly like the ROM's
-    # own files would be searched, "come di consueto".
-    extract_temp_dir: TemporaryDirectory[str] | None = None
-    if is_archive_candidate(Path(installer_abs)):
-        result = extract_and_rescan(Path(installer_abs))
-        if result is None:
-            _fail(
-                install_session_id,
-                "Installer archive didn't contain anything recognizable as "
-                "an installer",
-            )
-            return
-        extract_temp_dir, extract_root, top_candidate = result
-        installer_abs = str(extract_root / top_candidate.path)
 
     # InstallShield-based multi-part installers (their ISArcExtract/ISDone.dll
     # archive extractor) look for sibling data files (setup-N.bin, Data1.cab,
@@ -392,9 +426,14 @@ def run_install(install_session_id: int) -> None:
             # apps (wmplayer.exe, iexplore.exe, Common Files DLLs, ...) -
             # snapshot them now, before the installer ever runs, so they
             # don't get mistaken for what it wrote (see windows_output.py).
-            windows_baseline = snapshot_windows_content_files(
-                _wine_drive_c_root(prefix_dir, proton_or_wine)
-            )
+            saved_baseline = load_baseline(prefix_dir)
+            if saved_baseline is None:
+                windows_baseline = snapshot_windows_content_files(
+                    _wine_drive_c_root(prefix_dir, proton_or_wine)
+                )
+                save_baseline(prefix_dir, windows_baseline)
+            else:
+                windows_baseline = saved_baseline
 
         inner = _build_inner_command(installer_abs, proton_or_wine)
         argv = _wrap_for_sandbox(
@@ -920,5 +959,7 @@ def _fail(install_session_id: int, error: str) -> None:
             "error": error,
             "vnc_url": None,
             "vnc_web_port": None,
+            "phase": None,
+            "phase_detail": None,
         },
     )
