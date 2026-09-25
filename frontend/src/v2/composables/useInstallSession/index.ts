@@ -18,27 +18,20 @@ import { useI18n } from "vue-i18n";
 import type { Router } from "vue-router";
 import type {
   InstallCandidateSchema,
-  InstallSessionSchema,
   InstallSessionState,
-  ProtonBuildSchema,
 } from "@/__generated__";
 import { ROUTES } from "@/plugins/router";
 import installApi from "@/services/api/install";
+import type {
+  InstallSessionExtended,
+  ProtonBuildExtended,
+} from "@/services/api/install";
 import storeAuth from "@/stores/auth";
 import type { SimpleRom } from "@/stores/roms";
 import { useConfirm } from "@/v2/composables/useConfirm";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
 
-// Extended ProtonBuild shape with runtime-discovered fields that haven't made
-// it into the generated @/__generated__ types yet (version, source, size, etc.).
-// Casts from the raw API response — the backend returns these fields, the
-// generated types just haven't been regenerated.
-export type ProtonBuildExtended = ProtonBuildSchema & {
-  version?: string | null;
-  path?: string | null;
-  source?: string;
-  size_bytes?: number | null;
-};
+export type { ProtonBuildExtended };
 
 const RUNNING_STATES: InstallSessionState[] = ["installing", "streaming"];
 // A session parked here never actually ran anything yet - it's still
@@ -122,8 +115,11 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
   const confirm = useConfirm();
   const auth = storeAuth();
 
-  const session = ref<InstallSessionSchema | null>(null);
+  const session = ref<InstallSessionExtended | null>(null);
   const candidates = ref<InstallCandidateSchema[]>([]);
+  // Executables inside the currently selected archive/disc image source.
+  const sourceCandidates = ref<InstallCandidateSchema[]>([]);
+  const loadingSourceCandidates = ref(false);
   const protonBuilds = ref<ProtonBuildExtended[]>([]);
   const streamCopy = ref(false);
   const checking = ref(false);
@@ -182,6 +178,10 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
   // build before the VNC bridge comes up), poll its download progress so the
   // Install page can show "Downloading Proton X… xx%" instead of a bare
   // spinner with no context.
+  // What the worker is doing to unpack an archive/disc image before the
+  // installer window exists ("extracting"/"mounting" + the file name).
+  const phase = computed(() => session.value?.phase ?? null);
+  const phaseDetail = computed(() => session.value?.phase_detail ?? null);
   const protonDownloadProgress = ref<number | null>(null);
   const protonDownloadLabel = ref<string | null>(null);
   // Whether the build is in the extraction phase (download complete, tarball
@@ -276,7 +276,11 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     }
   }
 
-  async function startWithPath(installerPath?: string, protonBuild?: string) {
+  async function startWithPath(
+    installerPath?: string,
+    protonBuild?: string,
+    sourcePath?: string,
+  ) {
     const rom = getRom();
     if (!rom) return;
     starting.value = true;
@@ -286,6 +290,7 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
           installApi.startInstall({
             romId: rom.id,
             installerPath,
+            sourcePath,
             protonBuild,
           }),
         {
@@ -319,13 +324,33 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     }
   }
 
+  /** Executables inside an archive/disc image, read from its listing (the
+   *  server extracts nothing until the install actually starts). */
+  async function fetchSourceCandidates(sourcePath: string | null) {
+    const rom = getRom();
+    sourceCandidates.value = [];
+    if (!rom || !canInstall.value || !sourcePath) return;
+    loadingSourceCandidates.value = true;
+    try {
+      const { data } = await installApi.getInstallCandidates(
+        rom.id,
+        sourcePath,
+      );
+      sourceCandidates.value = data.candidates;
+    } catch {
+      // Leave the list empty; the server still picks one after unpacking.
+    } finally {
+      loadingSourceCandidates.value = false;
+    }
+  }
+
   /** Proton builds this server knows about, for the version-picker combo.
    *  One cheap lookup per page view, not polled continuously. */
   async function fetchProtonBuilds() {
     if (!canInstall.value) return;
     try {
       const { data } = await installApi.getProtonBuilds();
-      protonBuilds.value = data.builds as ProtonBuildExtended[];
+      protonBuilds.value = data.builds;
     } catch {
       protonBuilds.value = [];
     }
@@ -514,6 +539,8 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     workerAvailable,
     session,
     candidates,
+    sourceCandidates,
+    loadingSourceCandidates,
     protonBuilds,
     streamCopy,
     checking,
@@ -526,6 +553,8 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     awaitingInstallerPick,
     vncUrl,
     hasCache,
+    phase,
+    phaseDetail,
     protonDownloadProgress,
     protonDownloadLabel,
     protonExtracting,
@@ -534,6 +563,7 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     checkWorkerAvailable,
     checkCandidates,
     fetchProtonBuilds,
+    fetchSourceCandidates,
     startWithPath,
     cancelInstall,
     confirmClearIfInstalled,

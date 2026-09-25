@@ -136,12 +136,48 @@ watch(
   },
 );
 
-// Pre-fill both pickers the moment their data arrives, but never override a
+// Candidates that need unpacking first (archives, disc images) are offered
+// as an "Installation Source"; the executable list then shows what's inside
+// the selected one. Without any, only the executable picker exists.
+const SOURCE_KINDS = new Set(["archive", "disc image"]);
+const DIRECT_SOURCE = "__direct__";
+const selectedSource = ref<string | null>(null);
+
+const directCandidates = computed(() =>
+  install.candidates.value.filter((c) => !SOURCE_KINDS.has(c.kind)),
+);
+const sourceCandidates = computed(() =>
+  install.candidates.value.filter((c) => SOURCE_KINDS.has(c.kind)),
+);
+const usesSource = computed(
+  () => selectedSource.value !== null && selectedSource.value !== DIRECT_SOURCE,
+);
+
+// Pre-fill the pickers the moment their data arrives, but never override a
 // choice the user already made (e.g. candidates re-fetching after a session
-// started).
+// started). The default mirrors the server's own (top-ranked candidate).
 watch(install.candidates, (list) => {
-  if (selectedInstallerPath.value == null && list.length > 0) {
-    selectedInstallerPath.value = list[0].path;
+  if (selectedSource.value != null || list.length === 0) return;
+  if (sourceCandidates.value.length === 0) {
+    selectedSource.value = DIRECT_SOURCE;
+  } else {
+    selectedSource.value = SOURCE_KINDS.has(list[0].kind)
+      ? list[0].path
+      : DIRECT_SOURCE;
+  }
+});
+watch(selectedSource, (source) => {
+  selectedInstallerPath.value = null;
+  if (source === null) return;
+  if (source === DIRECT_SOURCE) {
+    selectedInstallerPath.value = directCandidates.value[0]?.path ?? null;
+  } else {
+    install.fetchSourceCandidates(source);
+  }
+});
+watch(install.sourceCandidates, (list) => {
+  if (usesSource.value && selectedInstallerPath.value == null) {
+    selectedInstallerPath.value = list[0]?.path ?? null;
   }
 });
 watch(install.protonBuilds, (list) => {
@@ -158,11 +194,22 @@ watch(install.protonBuilds, (list) => {
   }
 });
 
+const sourceItems = computed(() => [
+  ...(directCandidates.value.length > 0
+    ? [{ title: t("rom.install-source-direct"), value: DIRECT_SOURCE }]
+    : []),
+  ...sourceCandidates.value.map((c) => ({ title: c.file_name, value: c.path })),
+]);
 const installerItems = computed(() =>
-  install.candidates.value.map((c) => ({
-    title: c.file_name,
-    value: c.path,
-  })),
+  usesSource.value
+    ? install.sourceCandidates.value.map((c) => ({
+        title: c.path,
+        value: c.path,
+      }))
+    : directCandidates.value.map((c) => ({
+        title: c.file_name,
+        value: c.path,
+      })),
 );
 const protonItems = computed(() =>
   install.protonBuilds.value.map((build) => ({
@@ -179,6 +226,7 @@ async function startInstall() {
   install.startWithPath(
     selectedInstallerPath.value ?? undefined,
     selectedProtonBuild.value ?? undefined,
+    usesSource.value ? (selectedSource.value ?? undefined) : undefined,
   );
 }
 
@@ -211,6 +259,14 @@ const pendingLabel = computed(() => {
       return t("rom.install-extracting-proton", {
         name: install.protonDownloadLabel.value ?? "unknown",
       });
+    }
+    if (install.phase.value && install.phaseDetail.value) {
+      return t(
+        install.phase.value === "mounting"
+          ? "rom.install-mounting"
+          : "rom.install-extracting",
+        { name: install.phaseDetail.value },
+      );
     }
     if (!install.vncUrl.value) {
       return t("rom.install-starting");
@@ -301,7 +357,9 @@ const downloadSpeedLimitLabel = computed(() =>
         class="r-v2-install__pending"
       >
         <div class="r-v2-install__spinner" aria-hidden="true" />
-        <p class="r-v2-install__pending-label">{{ pendingLabel }}</p>
+        <p class="r-v2-install__pending-label">
+          {{ pendingLabel }}
+        </p>
         <div
           v-if="install.protonDownloadProgress.value !== null"
           class="r-v2-install__dl-progress"
@@ -374,8 +432,24 @@ const downloadSpeedLimitLabel = computed(() =>
         </RBtn>
 
         <RSelect
-          v-if="installerItems.length > 0"
+          v-if="sourceCandidates.length > 0"
+          v-model="selectedSource"
+          variant="outlined"
+          density="comfortable"
+          prefix-label="stacked"
+          prepend-inner-icon="mdi-folder-zip-outline"
+          hide-details
+          :disabled="isBusy"
+          :label="t('rom.install-source')"
+          :items="sourceItems"
+        />
+
+        <RSelect
+          v-if="
+            installerItems.length > 0 || install.loadingSourceCandidates.value
+          "
           v-model="selectedInstallerPath"
+          :loading="install.loadingSourceCandidates.value"
           variant="outlined"
           density="comfortable"
           prefix-label="stacked"
@@ -399,24 +473,35 @@ const downloadSpeedLimitLabel = computed(() =>
           :items="protonItems"
         />
 
-        <RBtn
-          v-if="install.session.value"
-          block
-          variant="outlined"
-          size="small"
-          color="error"
-          prepend-icon="mdi-database-remove"
-          :loading="install.clearingCache.value"
-          :disabled="!install.hasCache.value"
-          :title="
-            install.hasCache.value
-              ? undefined
-              : t('rom.install-clear-cache-disabled-hint')
-          "
-          @click="install.clearCache"
-        >
-          {{ t("rom.install-clear-cache") }}
-        </RBtn>
+        <div v-if="install.session.value" class="r-v2-install__cache-actions">
+          <RBtn
+            block
+            variant="outlined"
+            size="small"
+            prepend-icon="mdi-folder-zip-outline"
+            :disabled="!install.hasCache.value"
+            @click="installApi.downloadInstallCache(rom.id)"
+          >
+            {{ t("rom.install-download-cache") }}
+          </RBtn>
+          <RBtn
+            block
+            variant="outlined"
+            size="small"
+            color="error"
+            prepend-icon="mdi-database-remove"
+            :loading="install.clearingCache.value"
+            :disabled="!install.hasCache.value"
+            :title="
+              install.hasCache.value
+                ? undefined
+                : t('rom.install-clear-cache-disabled-hint')
+            "
+            @click="install.clearCache"
+          >
+            {{ t("rom.install-clear-cache") }}
+          </RBtn>
+        </div>
       </div>
       <div class="r-v2-install__sidebar-foot">
         <div class="r-v2-install__meta">
@@ -458,6 +543,11 @@ const downloadSpeedLimitLabel = computed(() =>
 </template>
 
 <style scoped>
+.r-v2-install__cache-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .r-v2-install {
   min-height: calc(100vh - var(--r-nav-h));
   padding: 24px var(--r-row-pad) 24px;

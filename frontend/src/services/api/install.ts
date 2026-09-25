@@ -3,9 +3,10 @@ import type {
   InstallDashboardSchema,
   InstallFilesSchema,
   InstallSessionSchema,
+  InstallSessionState,
   InstallStreamManifestSchema,
   InstallWorkerStatusSchema,
-  ProtonBuildsSchema,
+  ProtonBuildSchema,
 } from "@/__generated__";
 import api from "@/services/api";
 import { triggerFileDownload } from "@/services/api/rom";
@@ -21,32 +22,75 @@ type ProtonDownloadProgressSchema = {
   extracting: boolean;
 };
 
+// Shapes added on the backend that `npm run generate` hasn't picked up yet.
+// Once regenerated they live in @/__generated__ and these can be dropped.
+export type InstallSessionExtended = InstallSessionSchema & {
+  source_path?: string | null;
+  phase?: "extracting" | "mounting" | null;
+  phase_detail?: string | null;
+};
+export type ProtonBuildExtended = ProtonBuildSchema & {
+  version?: string | null;
+  path?: string | null;
+  source?: string;
+  size_bytes?: number | null;
+  custom?: boolean;
+};
+export type InstallCacheEntry = {
+  session_id: number;
+  rom_id: number;
+  rom_name: string | null;
+  platform_slug: string | null;
+  user_id: number;
+  state: InstallSessionState;
+  size_bytes: number;
+  created_at: string;
+  updated_at: string;
+  expires_at?: string | null;
+};
+export type InstallCache = {
+  total_bytes: number;
+  entries: InstallCacheEntry[];
+};
+export type InstallCacheClearResult = {
+  removed: number;
+  freed_bytes: number;
+  skipped: number;
+};
+
 export const installApi = api;
 
-async function getInstallCandidates(romId: number) {
-  return api.get<InstallCandidatesSchema>(`/roms/${romId}/install/candidates`);
+/** Without `source`: the ROM's own installer candidates. With `source` (an
+ *  archive or disc image from those): the executables inside it. */
+async function getInstallCandidates(romId: number, source?: string) {
+  return api.get<InstallCandidatesSchema>(`/roms/${romId}/install/candidates`, {
+    params: source ? { source } : undefined,
+  });
 }
 
 async function startInstall({
   romId,
   installerPath,
+  sourcePath,
   protonBuild,
   ttlSeconds,
 }: {
   romId: number;
   installerPath?: string;
+  sourcePath?: string;
   protonBuild?: string;
   ttlSeconds?: number;
 }) {
-  return api.post<InstallSessionSchema>(`/roms/${romId}/install`, {
+  return api.post<InstallSessionExtended>(`/roms/${romId}/install`, {
     installer_path: installerPath ?? null,
+    source_path: sourcePath ?? null,
     proton_build: protonBuild ?? null,
     ttl_seconds: ttlSeconds ?? null,
   });
 }
 
 async function getInstallSession(romId: number) {
-  return api.get<InstallSessionSchema>(`/roms/${romId}/install`);
+  return api.get<InstallSessionExtended>(`/roms/${romId}/install`);
 }
 
 async function clearInstallCache(romId: number) {
@@ -54,7 +98,7 @@ async function clearInstallCache(romId: number) {
 }
 
 async function cancelInstall(romId: number, { clearCache = true } = {}) {
-  return api.post<InstallSessionSchema>(
+  return api.post<InstallSessionExtended>(
     `/roms/${romId}/install/cancel?clear_cache=${clearCache}`,
   );
 }
@@ -70,9 +114,37 @@ async function getInstallFiles(romId: number) {
 }
 
 /** Proton builds the server knows about - installed (discovered on disk)
- *  and downloadable (from upstream release APIs) alike. */
+ *  and downloadable (upstream release APIs, or added by the user) alike. */
 async function getProtonBuilds() {
-  return api.get<ProtonBuildsSchema>("/roms/install/proton-builds");
+  return api.get<{ builds: ProtonBuildExtended[] }>(
+    "/roms/install/proton-builds",
+  );
+}
+
+async function addCustomProtonBuild(name: string, url: string) {
+  return api.post<ProtonBuildExtended>("/roms/install/proton-builds/custom", {
+    name,
+    url,
+  });
+}
+
+async function deleteCustomProtonBuild(buildId: string) {
+  return api.delete(`/roms/install/proton-builds/custom/${buildId}`);
+}
+
+/** Every install cache on disk plus the total (admin Settings view). */
+async function getInstallCache() {
+  return api.get<InstallCache>("/roms/install/cache");
+}
+
+async function deleteInstallCache(sessionId: number) {
+  return api.delete<InstallCacheClearResult>(
+    `/roms/install/cache/${sessionId}`,
+  );
+}
+
+async function deleteAllInstallCaches() {
+  return api.delete<InstallCacheClearResult>("/roms/install/cache");
 }
 
 /** Enqueue a Proton build download on the install worker. Returns the RQ
@@ -145,6 +217,11 @@ export default {
   getInstallStreamManifest,
   getInstallStreamFileDownloadPath,
   getProtonBuilds,
+  addCustomProtonBuild,
+  deleteCustomProtonBuild,
+  getInstallCache,
+  deleteInstallCache,
+  deleteAllInstallCaches,
   downloadProtonBuild,
   getProtonDownloadProgress,
 };
