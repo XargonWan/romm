@@ -28,6 +28,7 @@ Three layers handle that:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -74,6 +75,26 @@ def snapshot_windows_content_files(prefix_dir: Path) -> frozenset[Path]:
     """Baseline of what's already under drive_c before the installer runs -
     Wine's own bootstrap content, to be excluded later."""
     return frozenset(_iter_content_files(prefix_dir))
+
+
+_BASELINE_FILE = ".romm-baseline.json"
+
+
+def save_baseline(prefix_root: Path, baseline: frozenset[Path]) -> None:
+    """Persist the stock-content baseline next to the Wine prefix, so a later
+    install into the same cache (a patch, a reinstall) keeps excluding only
+    Wine's own files and not the game installed earlier."""
+    (prefix_root / _BASELINE_FILE).write_text(
+        json.dumps(sorted(str(p) for p in baseline))
+    )
+
+
+def load_baseline(prefix_root: Path) -> frozenset[Path] | None:
+    try:
+        raw = json.loads((prefix_root / _BASELINE_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    return frozenset(Path(p) for p in raw)
 
 
 def collect_windows_install_files(
