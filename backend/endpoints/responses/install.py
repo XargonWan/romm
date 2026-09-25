@@ -66,6 +66,8 @@ class ProtonBuildSchema(BaseModel):
     source: str = "runtime"
     # Approximate tarball size in bytes, only for upstream builds.
     size_bytes: int | None = None
+    # Added by the user from Settings (can be removed again).
+    custom: bool = False
 
 
 class ProtonBuildsSchema(BaseModel):
@@ -113,6 +115,13 @@ class InstallSessionSchema(BaseModel):
     user_id: int
     state: InstallSessionState
     installer_path: str | None = None
+    # Archive/disc image the installer comes from, when it isn't run directly.
+    source_path: str | None = None
+    # "extracting" / "mounting" while the worker unpacks source_path (see
+    # models.install_session.InstallPhase), with the file name in
+    # phase_detail. None once the installer window is up or when not applicable.
+    phase: str | None = None
+    phase_detail: str | None = None
     proton_build: str | None = None
     expires_at: UTCDatetime | None = None
     vnc_url: str | None = None
@@ -168,3 +177,40 @@ class InstallStreamManifestSchema(BaseModel):
     viewer_count: int
     # The server-wide cap all of them share, or None when unlimited.
     download_speed_limit_bytes_per_sec: int | None = None
+
+
+class InstallCacheEntrySchema(BaseModel):
+    """One install cache directory on disk, for the Settings cache manager."""
+
+    session_id: int
+    rom_id: int
+    rom_name: str | None
+    platform_slug: str | None
+    user_id: int
+    state: InstallSessionState
+    size_bytes: int
+    created_at: UTCDatetime
+    updated_at: UTCDatetime
+    # NULL means the cache never expires.
+    expires_at: UTCDatetime | None = None
+
+
+class InstallCacheSchema(BaseModel):
+    # Everything under the install cache root, including directories that no
+    # session owns anymore.
+    total_bytes: int
+    entries: list[InstallCacheEntrySchema]
+
+
+class InstallCacheClearSchema(BaseModel):
+    removed: int
+    freed_bytes: int
+    # Caches left alone because their install is still running.
+    skipped: int
+
+
+class CustomProtonBuildForm(BaseModel):
+    """A user-added Proton build: a display name and a tarball URL."""
+
+    name: str
+    url: str

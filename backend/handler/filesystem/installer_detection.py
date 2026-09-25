@@ -56,6 +56,9 @@ KNOWN_INSTALLER_PATTERNS: tuple[str, ...] = (
     "setup*.msi",
 )
 
+# `InstallerCandidate.kind` values that need unpacking before anything runs.
+ARCHIVE_SOURCE_KINDS: frozenset[str] = frozenset(("disc image", "archive"))
+
 EXECUTABLE_EXTENSIONS: frozenset[str] = frozenset((".exe", ".msi", ".bat"))
 DISC_IMAGE_EXTENSIONS: frozenset[str] = frozenset(
     (".iso", ".cue", ".chd", ".ccd", ".bin", ".img", ".mds", ".mdf", ".nrg")
@@ -135,25 +138,14 @@ def detect_installer_candidates(files: list[DetectedFile]) -> list[InstallerCand
     return candidates
 
 
-def pick_confident_installer(
+def pick_default_installer(
     candidates: list[InstallerCandidate],
 ) -> InstallerCandidate | None:
-    """The single candidate safe to start with automatically, or None.
+    """The top-ranked candidate, or None when there is nothing to run.
 
-    Only a `RANK_KNOWN_INSTALLER` top match qualifies - a well-known
-    installer name (gog-*.exe, setup.exe, ...) is confident enough to run
-    without asking a human first, same threshold every client used to
-    decide this for itself (see e.g. the web UI's `startInstallAndNavigate`).
-    Centralized here so every client (web, CLI, ...) gets identical
-    auto-start behavior for free instead of re-implementing the heuristic -
-    the whole point of resolving this server-side.
-
-    Multiple same-rank candidates (e.g. several installer versions sitting
-    side by side) are not treated as ambiguous: `detect_installer_candidates`
-    already breaks the tie deterministically (biggest first, then path), so
-    the top entry is picked exactly like a human clicking the first, largest
-    option would.
+    Same choice the Install page pre-selects, so a client starting an install
+    without naming a file (the CLI, ...) behaves as if Install was pressed
+    there. The winner may be an archive or disc image, whose installer is
+    then resolved after unpacking it (see handler.install.archive_prescan).
     """
-    if candidates and candidates[0].rank == RANK_KNOWN_INSTALLER:
-        return candidates[0]
-    return None
+    return candidates[0] if candidates else None

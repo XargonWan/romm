@@ -40,6 +40,13 @@ class InstallSessionState(enum.StrEnum):
     EXPIRED = "expired"
 
 
+class InstallPhase(enum.StrEnum):
+    # Unpacking an archive (.zip/.7z/...) that holds the installer.
+    EXTRACTING = "extracting"
+    # Reading a disc image (.iso/.chd/...) that holds the installer.
+    MOUNTING = "mounting"
+
+
 # States in which the install is still doing work and should not be restarted.
 ACTIVE_INSTALL_STATES = frozenset(
     {
@@ -88,6 +95,10 @@ class InstallSession(BaseModel):
 
     # Path (relative to the ROM's directory) of the installer chosen for this run.
     installer_path: Mapped[str | None] = mapped_column(String(1000), default=None)
+    # Archive or disc image (relative to the ROM's directory) the installer is
+    # extracted from. NULL when the installer is run straight from the ROM's
+    # files; then `installer_path` is relative to the extracted tree instead.
+    source_path: Mapped[str | None] = mapped_column(String(1000), default=None)
     # Proton build id chosen for this run (see handler.install.proton_builds).
     # NULL falls back to the first installed build the manager discovers.
     proton_build: Mapped[str | None] = mapped_column(String(255), default=None)
@@ -98,6 +109,11 @@ class InstallSession(BaseModel):
     expires_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), default=None
     )
+
+    # What the worker is doing before the installer window exists (see
+    # InstallPhase) and the file it is doing it to. NULL otherwise.
+    phase: Mapped[str | None] = mapped_column(String(32), default=None)
+    phase_detail: Mapped[str | None] = mapped_column(String(1000), default=None)
 
     # noVNC URL for the running installer; only set while state == INSTALLING.
     vnc_url: Mapped[str | None] = mapped_column(String(500), default=None)
