@@ -272,8 +272,11 @@ class RommClient:
 
     # -- session ----------------------------------------------------------
     def start_session(self, rom_id: int, installer_path: str | None,
-                      proton_build: str | None, ttl: int | None) -> dict:
+                      proton_build: str | None, ttl: int | None,
+                      auto_mode: bool | None = None) -> dict:
         body = {"installer_path": installer_path, "proton_build": proton_build}
+        if auto_mode is not None:
+            body["auto_mode"] = auto_mode
         if ttl is not None:
             body["ttl_seconds"] = ttl
         status, data = self.c.post_json(f"/api/roms/{rom_id}/install", body)
@@ -607,7 +610,8 @@ def verify_and_repair(rom: RommClient, rom_id: int, out_dir: Path,
 
 
 def start_session_with_retry(rom: RommClient, rom_id: int, installer_path: str | None,
-                             proton_build: str | None, ttl: int | None) -> dict:
+                             proton_build: str | None, ttl: int | None,
+                             auto_mode: bool | None = None) -> dict:
     """POST /install, riding out a transient "install worker not connected"
     503 instead of failing on it outright - same idea as the web UI's own
     withWorkerStartupRetry. A manual-mode result (AWAITING_INSTALLER) never
@@ -629,7 +633,8 @@ def start_session_with_retry(rom: RommClient, rom_id: int, installer_path: str |
         if delay:
             time.sleep(delay)
         try:
-            return rom.start_session(rom_id, installer_path, proton_build, ttl)
+            return rom.start_session(rom_id, installer_path, proton_build, ttl,
+                                     auto_mode)
         except ApiError as e:
             if e.status != 503 or attempt == len(WORKER_STARTUP_RETRY_DELAYS):
                 raise
@@ -657,6 +662,7 @@ def poll_session(rom: RommClient, rom_id: int, proton_build: str | None,
     last_state = None
     announced_install_page = False
     last_phase = None
+    last_auto_status = None
     install_page_url = f"{rom.c.base}/rom/{rom_id}/install"
     while time.time() < deadline:
         session = rom.get_session(rom_id, session_id=session_id)
@@ -694,11 +700,21 @@ def poll_session(rom: RommClient, rom_id: int, proton_build: str | None,
             # so the user can watch/drive the installer through the normal
             # UI once the VNC bridge comes up.
             if vnc_url and not announced_install_page:
-                log(f"  installer is running - the wizard itself still needs "
-                    f"someone to click through it (no unattended \"auto mode\" "
-                    f"yet), open this to do that:")
+                if session.get("auto_mode"):
+                    log("  installer is running - auto mode is clicking through "
+                        "it, watch or take over here:")
+                else:
+                    log("  installer is running - the wizard itself still needs "
+                        "someone to click through it (or pass --auto-mode), "
+                        "open this to do that:")
                 log(f"  {install_page_url}")
                 announced_install_page = True
+            auto_status = session.get("auto_status")
+            if auto_status != last_auto_status:
+                if auto_status == "needs_manual":
+                    warn("auto mode cannot continue - continue the installation "
+                         f"by hand: {install_page_url}")
+                last_auto_status = auto_status
             # Proton download progress during bootstrapping. The session's
             # own `proton_build` (resolved server-side at creation time, see
             # resolve_effective_build) is the source of truth for which
@@ -752,6 +768,9 @@ def main() -> int:
                         "to manual mode if it can't).")
     p.add_argument("--proton-build", default=None,
                    help="proton build id (default: server)")
+    p.add_argument("--auto-mode", action="store_true",
+                   help="experimental: OCR the installer and press its "
+                        "Next/Agree/Install/Finish buttons unattended")
     p.add_argument("--ttl", type=int, default=None, help="cache TTL seconds")
     p.add_argument("--out", default="/tmp/romm-install",
                    help="base output dir - files land under a subfolder named "
@@ -868,7 +887,8 @@ def _run(args: argparse.Namespace, rom: RommClient) -> int:
         # mode itself never needs the worker at all, so this only ever
         # matters when the server can auto-pick and needs to enqueue a job.
         session = start_session_with_retry(rom, args.rom_id, args.installer_path,
-                                           args.proton_build, args.ttl)
+                                           args.proton_build, args.ttl,
+                                           True if args.auto_mode else None)
         log(f"session started: id={session.get('id')} state={session.get('state')}")
 
         # Step 3: manual mode - the server couldn't confidently resolve an
