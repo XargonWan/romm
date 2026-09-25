@@ -56,12 +56,16 @@ const streamUncompletedFiles = ref(
 );
 const savedStreamUncompletedFiles = ref(streamUncompletedFiles.value);
 
+const autoMode = ref((config.value as Config).INSTALL_AUTO_MODE ?? false);
+const savedAutoMode = ref(autoMode.value);
+
 const dirty = computed(() => {
   if (kbPerSec.value !== savedSnapshot.value) return true;
   if (selectedProtonBuild.value !== savedProtonBuild.value) return true;
   if (cacheTtlDays.value !== savedCacheTtlDays.value) return true;
   if (streamUncompletedFiles.value !== savedStreamUncompletedFiles.value)
     return true;
+  if (autoMode.value !== savedAutoMode.value) return true;
   return false;
 });
 
@@ -87,6 +91,8 @@ async function loadConfig() {
     savedCacheTtlDays.value = cacheTtlDays.value;
     streamUncompletedFiles.value = cfg.INSTALL_STREAM_UNCOMPLETED_FILES;
     savedStreamUncompletedFiles.value = streamUncompletedFiles.value;
+    autoMode.value = (cfg as Config).INSTALL_AUTO_MODE ?? false;
+    savedAutoMode.value = autoMode.value;
   } catch {
     // Best-effort: the section still renders with whatever the store
     // already had (e.g. from a previous successful load).
@@ -117,6 +123,7 @@ function onReset() {
   selectedProtonBuild.value = savedProtonBuild.value;
   cacheTtlDays.value = savedCacheTtlDays.value;
   streamUncompletedFiles.value = savedStreamUncompletedFiles.value;
+  autoMode.value = savedAutoMode.value;
 }
 
 async function onSave() {
@@ -131,11 +138,13 @@ async function onSave() {
       default_proton_build: selectedProtonBuild.value,
       stream_uncompleted_files: streamUncompletedFiles.value,
       cache_ttl_days: Math.max(0, Math.floor(Number(cacheTtlDays.value) || 0)),
+      auto_mode: autoMode.value,
     });
     savedSnapshot.value = kbPerSec.value;
     savedProtonBuild.value = selectedProtonBuild.value;
     savedCacheTtlDays.value = cacheTtlDays.value;
     savedStreamUncompletedFiles.value = streamUncompletedFiles.value;
+    savedAutoMode.value = autoMode.value;
     await configStore.fetchConfig();
     snackbar.success(t("settings.stream-install-saved"));
   } catch (err) {
@@ -405,6 +414,12 @@ const downloadableBuilds = computed(() =>
         v-model="streamUncompletedFiles"
         :title="t('settings.stream-install-uncompleted-files')"
         :description="t('settings.stream-install-uncompleted-files-desc')"
+        :disabled="!canEdit || loading"
+      />
+      <SettingsToggleRow
+        v-model="autoMode"
+        :title="t('settings.stream-install-auto-mode')"
+        :description="t('settings.stream-install-auto-mode-desc')"
         :disabled="!canEdit || loading"
       />
     </SettingsSection>

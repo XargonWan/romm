@@ -77,7 +77,10 @@ async function updateScanSettings(payload: ScanSettingsPayload) {
 }
 
 async function updateInstallSettings(
-  payload: InstallSettingsPayload & { cache_ttl_days?: number | null },
+  payload: InstallSettingsPayload & {
+    cache_ttl_days?: number | null;
+    auto_mode?: boolean | null;
+  },
 ) {
   return api.put<void, AxiosResponse<void>, InstallSettingsPayload>(
     "/config/install",

@@ -28,6 +28,9 @@ export type InstallSessionExtended = InstallSessionSchema & {
   source_path?: string | null;
   phase?: "extracting" | "mounting" | null;
   phase_detail?: string | null;
+  auto_mode?: boolean;
+  auto_status?: "running" | "needs_manual" | null;
+  auto_detail?: string | null;
 };
 export type ProtonBuildExtended = ProtonBuildSchema & {
   version?: string | null;
@@ -74,18 +77,29 @@ async function startInstall({
   sourcePath,
   protonBuild,
   ttlSeconds,
+  autoMode,
 }: {
   romId: number;
   installerPath?: string;
   sourcePath?: string;
   protonBuild?: string;
   ttlSeconds?: number;
+  autoMode?: boolean;
 }) {
   return api.post<InstallSessionExtended>(`/roms/${romId}/install`, {
     installer_path: installerPath ?? null,
     source_path: sourcePath ?? null,
     proton_build: protonBuild ?? null,
     ttl_seconds: ttlSeconds ?? null,
+    auto_mode: autoMode ?? null,
+  });
+}
+
+/** Flip the experimental auto mode (OCR clicks through the installer's
+ *  dialogs) on a session, also while the installer is running. */
+async function setInstallAutoMode(romId: number, enabled: boolean) {
+  return api.patch<InstallSessionExtended>(`/roms/${romId}/install/auto-mode`, {
+    enabled,
   });
 }
 
@@ -206,6 +220,7 @@ function getInstallStreamFileDownloadPath(
 export default {
   getInstallCandidates,
   startInstall,
+  setInstallAutoMode,
   getInstallSession,
   clearInstallCache,
   cancelInstall,

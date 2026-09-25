@@ -11,7 +11,7 @@
 // already in flight by the time this mounts; or a direct visit/bookmark/
 // refresh, where nothing has been requested yet and the start panel's CTA
 // drives the same detect-then-start flow itself.
-import { RAlert, RBtn, RCard, RIcon, RSelect } from "@v2/lib";
+import { RAlert, RBtn, RCard, RIcon, RSelect, RSwitch } from "@v2/lib";
 import {
   computed,
   nextTick,
@@ -430,6 +430,28 @@ const downloadSpeedLimitLabel = computed(() =>
           </template>
           {{ isBusy ? t("rom.install-abort") : startCtaLabel }}
         </RBtn>
+
+        <RSwitch
+          :model-value="install.autoMode.value"
+          :label="t('rom.install-auto-mode')"
+          @update:model-value="install.setAutoMode"
+        />
+        <RAlert
+          v-if="install.autoMode.value && install.autoStatus.value"
+          :type="
+            install.autoStatus.value === 'needs_manual' ? 'warning' : 'info'
+          "
+          density="compact"
+          variant="translucent"
+        >
+          {{
+            install.autoStatus.value === "needs_manual"
+              ? t("rom.install-auto-mode-needs-manual")
+              : t("rom.install-auto-mode-running", {
+                action: install.autoDetail.value ?? "…",
+              })
+          }}
+        </RAlert>
 
         <RSelect
           v-if="sourceCandidates.length > 0"

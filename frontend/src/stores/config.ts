@@ -3,7 +3,10 @@ import type { ConfigResponse, EjsControlsButton } from "@/__generated__";
 import api from "@/services/api";
 
 // INSTALL_CACHE_TTL_DAYS is newer than the generated ConfigResponse.
-export type Config = ConfigResponse & { INSTALL_CACHE_TTL_DAYS?: number };
+export type Config = ConfigResponse & {
+  INSTALL_CACHE_TTL_DAYS?: number;
+  INSTALL_AUTO_MODE?: boolean;
+};
 type ExclusionTypes =
   | "EXCLUDED_PLATFORMS"
   | "EXCLUDED_SINGLE_EXT"
@@ -50,6 +53,7 @@ const defaultConfig = {
   INSTALL_DEFAULT_PROTON_BUILD: null,
   INSTALL_STREAM_UNCOMPLETED_FILES: false,
   INSTALL_CACHE_TTL_DAYS: 0,
+  INSTALL_AUTO_MODE: false,
 } as ConfigResponse;
 
 export default defineStore("config", {

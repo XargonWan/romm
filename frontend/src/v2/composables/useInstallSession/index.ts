@@ -13,7 +13,7 @@
 // why it stays cheap-per-card). Mounted once by GameActions' InstallButton
 // (for the ribbon control) and once by the Install page (for the full
 // controls) - each gets its own independent poll loop.
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import type { Router } from "vue-router";
 import type {
@@ -27,6 +27,8 @@ import type {
   ProtonBuildExtended,
 } from "@/services/api/install";
 import storeAuth from "@/stores/auth";
+import type { Config } from "@/stores/config";
+import storeConfig from "@/stores/config";
 import type { SimpleRom } from "@/stores/roms";
 import { useConfirm } from "@/v2/composables/useConfirm";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
@@ -114,6 +116,7 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
   const snackbar = useSnackbar();
   const confirm = useConfirm();
   const auth = storeAuth();
+  const configStore = storeConfig();
 
   const session = ref<InstallSessionExtended | null>(null);
   const candidates = ref<InstallCandidateSchema[]>([]);
@@ -173,6 +176,44 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
       !!state.value &&
       !AWAITING_PICK_STATES.includes(state.value),
   );
+
+  // Experimental auto mode (OCR clicks through the installer's dialogs). Before
+  // a session exists this is the choice sent with the start request (default
+  // from the settings); once one exists the session's flag is the truth and
+  // flipping it also reaches a running installer.
+  const pendingAutoMode = ref(
+    (configStore.config as Config).INSTALL_AUTO_MODE ?? false,
+  );
+  const autoMode = computed(
+    () => session.value?.auto_mode ?? pendingAutoMode.value,
+  );
+  const autoStatus = computed(() => session.value?.auto_status ?? null);
+  const autoDetail = computed(() => session.value?.auto_detail ?? null);
+
+  async function setAutoMode(enabled: boolean) {
+    const rom = getRom();
+    pendingAutoMode.value = enabled;
+    if (!rom || !session.value || !isActive.value) return;
+    try {
+      const { data } = await installApi.setInstallAutoMode(rom.id, enabled);
+      session.value = data;
+    } catch (err) {
+      snackbar.error(
+        t("rom.install-auto-mode-failed", { detail: errorDetail(err) }),
+        { icon: "mdi-alert-circle-outline" },
+      );
+    }
+  }
+
+  // Auto mode found nothing it can press: tell the user to continue by hand.
+  watch(autoStatus, (status, previous) => {
+    if (status === "needs_manual" && previous !== "needs_manual") {
+      snackbar.warning(t("rom.install-auto-mode-needs-manual"), {
+        icon: "mdi-hand-back-right-outline",
+        timeout: 10000,
+      });
+    }
+  });
 
   // While the worker is bootstrapping (downloading/installing the Proton
   // build before the VNC bridge comes up), poll its download progress so the
@@ -292,6 +333,7 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
             installerPath,
             sourcePath,
             protonBuild,
+            autoMode: pendingAutoMode.value,
           }),
         {
           onWaiting: (w) => (waitingForWorker.value = w),
@@ -555,6 +597,10 @@ export function useInstallSession(getRom: () => SimpleRom | null | undefined) {
     hasCache,
     phase,
     phaseDetail,
+    autoMode,
+    autoStatus,
+    autoDetail,
+    setAutoMode,
     protonDownloadProgress,
     protonDownloadLabel,
     protonExtracting,
