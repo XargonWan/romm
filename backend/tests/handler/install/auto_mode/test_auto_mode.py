@@ -207,6 +207,27 @@ class TestPlanner:
         assert same_screen(a, frozenset({"a", "b", "c", "d", "e", "f"}))
         assert not same_screen(a, frozenset({"x", "y", "z"}))
 
+    def test_progress_screen_is_never_touched(self):
+        # Real crash: a stale "Install" match (already at one click attempt
+        # from the earlier screen that led here) queued an Alt+I mnemonic
+        # retry on this screen instead of the one it was meant for - on an
+        # active extraction screen, that aborted a real install within
+        # seconds of it genuinely starting, even though the same install
+        # reliably finishes in well under a minute left alone. No action
+        # must ever come back here, no matter what else matches.
+        words = screen(
+            line("Installing Olden Era", 20, 20, 1),
+            line("Extracting HeroesOldenEra Data globalgamemanagers", 20, 200, 2),
+            line("Elapsed Time 4 sec", 20, 260, 3),
+            line("Remaining Time", 20, 280, 4),
+            line("Install", 400, 400, 5),
+            line("Cancel", 600, 475, 6),
+        )
+        memory = ScreenMemory(attempts={"install:install": 1})
+        action, matches = plan_action(words, CATALOG, memory, installing=True)
+        assert action is None
+        assert any(m.entry.category == "install" for m in matches)
+
 
 class Harness:
     def __init__(self, screens):

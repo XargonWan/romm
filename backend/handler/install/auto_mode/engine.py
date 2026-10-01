@@ -84,6 +84,13 @@ def is_confirm_page(lines: list[str], catalog: Catalog) -> bool:
     return _phrase_present(lines, catalog.confirm_keywords)
 
 
+def is_progress_page(lines: list[str], catalog: Catalog) -> bool:
+    """An active extraction/copy screen (an elapsed/remaining-time progress
+    bar) - never safe to touch, see buttons.yml's own "progress" keyword
+    list for why."""
+    return _phrase_present(lines, catalog.progress_keywords)
+
+
 def _priority(match: Match) -> int:
     entry = match.entry
     return _PRIORITY["toggle" if entry.toggle else entry.category]
@@ -103,6 +110,10 @@ def plan_action(
     """
     lines = screen_lines(words)
     matches = find_matches(words, catalog)
+    if is_progress_page(lines, catalog):
+        # Still report whatever OCR found (for the driver's own logging),
+        # but never act on it - see buttons.yml's "progress" keywords.
+        return None, matches
     license_page = is_license_page(lines, catalog)
     agree_allowed = license_page or is_confirm_page(lines, catalog)
 

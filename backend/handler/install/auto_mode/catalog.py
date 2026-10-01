@@ -57,6 +57,7 @@ class Catalog:
     buttons: tuple[ButtonEntry, ...]
     license_keywords: tuple[str, ...]
     confirm_keywords: tuple[str, ...]
+    progress_keywords: tuple[str, ...]
 
     def entries(self, category: str) -> tuple[ButtonEntry, ...]:
         return tuple(b for b in self.buttons if b.category == category)
@@ -94,4 +95,5 @@ def load_catalog(extra_buttons: list[dict] | None = None) -> Catalog:
         buttons=tuple(e for e in entries if e is not None),
         license_keywords=_keywords(context, "license"),
         confirm_keywords=_keywords(context, "confirm"),
+        progress_keywords=_keywords(context, "progress"),
     )

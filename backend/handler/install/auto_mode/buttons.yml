@@ -56,6 +56,29 @@ context_keywords:
       "是否安裝",
       "是否继续",
     ]
+  # An active extraction/copy screen (an elapsed/remaining-time progress
+  # bar) - never safe to touch. Caught live: a stray action on this screen
+  # (a mnemonic retry queued a tick earlier for the "Install" button that
+  # was just clicked to get here, landing on the progress screen instead)
+  # aborted a real install within seconds of it starting, even though the
+  # same install reliably completes in well under a minute left alone.
+  progress:
+    [
+      "elapsed time",
+      "remaining time",
+      "tempo trascorso",
+      "tempo rimanente",
+      "verstrichene zeit",
+      "verbleibende zeit",
+      "temps écoulé",
+      "temps restant",
+      "tiempo transcurrido",
+      "tiempo restante",
+      "経過時間",
+      "残り時間",
+      "已用时间",
+      "剩余时间",
+    ]
 
 buttons:
   - category: next
