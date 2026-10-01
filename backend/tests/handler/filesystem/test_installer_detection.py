@@ -73,6 +73,28 @@ class TestDetectInstallerCandidates:
         result = detect_installer_candidates(files)
         assert all(c.rank == RANK_LINUX_INSTALLER for c in result)
 
+    def test_bundled_redistributable_is_excluded(self):
+        # Regression guard: a prerequisite installer living under a
+        # conventional redist folder must never outrank (or even appear
+        # alongside) the game's own executable, even when it's the larger
+        # file - observed picking vcredist_x64.exe over the real game.
+        files = [
+            DetectedFile("Game.exe", 500),
+            DetectedFile(
+                "Steamworks Shared/_CommonRedist/vcredist/2010/vcredist_x64.exe",
+                5_000_000,
+            ),
+            DetectedFile("_CommonRedist/directx/DXSETUP.exe", 9_000_000),
+            DetectedFile("redist/dotnetfx35.exe", 9_000_000),
+        ]
+        result = detect_installer_candidates(files)
+        assert _paths(result) == ["Game.exe"]
+
+    def test_redistributable_dir_match_is_case_insensitive(self):
+        files = [DetectedFile("Game.exe", 1), DetectedFile("Redist/VCRedist.exe", 1)]
+        result = detect_installer_candidates(files)
+        assert _paths(result) == ["Game.exe"]
+
     def test_full_priority_ordering(self):
         files = [
             DetectedFile("run.sh", 1),

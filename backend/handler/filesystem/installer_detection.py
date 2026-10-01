@@ -68,6 +68,30 @@ ARCHIVE_EXTENSIONS: frozenset[str] = frozenset(
 )
 LINUX_INSTALLER_EXTENSIONS: frozenset[str] = frozenset((".sh", ".run", ".appimage"))
 
+# Bundled prerequisite installers (VC++ Redistributable, DirectX, .NET, PhysX,
+# OpenAL, ...) ship inside a conventionally-named subfolder in virtually every
+# PC game release and must never be picked as *the* installer: running one
+# does nothing for the game itself, and - observed in testing - its own
+# throwaway output can get captured as if it were the actual install once it
+# exits. Matched by folder name rather than by the executable's own name,
+# since the prerequisite's binary varies by vendor/version (vcredist_x64.exe,
+# dxsetup.exe, dotnetfx35.exe, PhysX_Setup.exe, oalinst.exe, ...) while the
+# convention of where they live doesn't.
+PREREQUISITE_DIR_NAMES: frozenset[str] = frozenset(
+    (
+        "_commonredist",
+        "commonredist",
+        "redist",
+        "redistributables",
+        "prerequisites",
+        "prereqs",
+        "directx",
+        "dxsetup",
+        "vcredist",
+        "dotnet",
+    )
+)
+
 
 @dataclass(frozen=True, slots=True)
 class DetectedFile:
@@ -90,12 +114,19 @@ def _matches_known_installer(name_lower: str) -> bool:
     return any(fnmatch.fnmatch(name_lower, pat) for pat in KNOWN_INSTALLER_PATTERNS)
 
 
+def _under_prerequisite_dir(posix: PurePosixPath) -> bool:
+    return any(part.lower() in PREREQUISITE_DIR_NAMES for part in posix.parts[:-1])
+
+
 def _classify(file: DetectedFile) -> InstallerCandidate | None:
     posix = PurePosixPath(file.path)
     name = posix.name
     name_lower = name.lower()
     ext = posix.suffix.lower()
     is_top_level = len(posix.parts) == 1
+
+    if ext in EXECUTABLE_EXTENSIONS and _under_prerequisite_dir(posix):
+        return None
 
     if ext in EXECUTABLE_EXTENSIONS and _matches_known_installer(name_lower):
         return _make(file, RANK_KNOWN_INSTALLER, "known installer")
